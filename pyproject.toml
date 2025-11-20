@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "GPU-accelerated image segmentation using SAM2 on NVIDIA Triton Inference Server"
 authors = [{name = "HHMI Janelia", email = "scicompsoft@janelia.hhmi.org"}]
 requires-python = ">=3.10"
-readme = "CLAUDE.md"
+readme = "README.md"
 license = {text = "Janelia Open-Source Software License"}
 
 dependencies = [
@@ -76,7 +76,6 @@ python scripts/export_sam2_to_onnx.py \
 setup = { depends-on = ["download-base", "install-sam2", "export-onnx"] }
 
 # Run tests
-test = "pytest tests/ -v"
 test-sam2 = "python test_sam2.py"
 
 # Format code

@@ -15,25 +15,6 @@ This implementation uses:
 
 ## SAM2 + Triton Architecture
 
-### SAM2 Model
-
-SAM2 introduces several improvements over SAM 1.0:
-
-#### Architecture Evolution
-- **Hiera Backbone**: Replaces ViT with more efficient Hierarchical Vision Transformer
-- **Memory Attention**: Streaming memory mechanism for temporal consistency
-- **Unified Image/Video**: Same architecture handles both images and videos
-- **Better Efficiency**: 40% faster than SAM 1.0 with improved accuracy
-
-#### Available Models
-
-| Model | Size | Speed (FPS) | Use Case |
-|-------|------|-------------|----------|
-| sam2.1_hiera_tiny | 38.9M | 91.2 | Edge deployment, real-time applications |
-| sam2.1_hiera_small | 46M | 84.8 | Balanced performance |
-| sam2.1_hiera_base_plus | 80.8M | 64.1 | Production default (recommended) |
-| sam2.1_hiera_large | 224.4M | 39.5 | Maximum quality |
-
 ### Triton Deployment
 
 #### Model Repository Structure
@@ -81,41 +62,39 @@ Outputs:
 - ~10-30ms per prediction
 - Supports interactive workflows
 
-#### Triton Features Enabled
+#### Triton Configuration
 
-**Dynamic Batching**:
+**ONNX Runtime with GPU Acceleration**:
+- Models run using ONNX Runtime backend on GPU
+- Native CUDA acceleration without TensorRT conversion
+- TensorRT was initially attempted but SAM2's ONNX operators (e.g., ScatterND) are not fully compatible
+- ONNX Runtime provides excellent performance for SAM2's architecture
+
+**Dynamic Input Shapes**:
 ```protobuf
-dynamic_batching {
-  preferred_batch_size: [ 1, 2, 4, 8 ]
-  max_queue_delay_microseconds: 100
-}
+input [
+  {
+    name: "image"
+    dims: [ -1, 3, 1024, 1024 ]  # -1 = dynamic batch dimension
+  }
+]
 ```
-- Automatically batches requests for higher throughput
-- Configurable latency vs throughput tradeoff
+- All models configured with dynamic batch dimensions
+- Supports variable batch sizes at runtime
+- Variable number of prompt points (decoder)
 
-**TensorRT Acceleration**:
-```protobuf
-execution_accelerators {
-  gpu_execution_accelerator : [ {
-    name : "tensorrt"
-    parameters { key: "precision_mode" value: "FP16" }
-  }]
-}
-```
-- Automatic FP16 optimization for 2x speedup
-- CUDA graph optimization for reduced overhead
-
-**Multi-GPU Support**:
+**GPU Instance Configuration**:
 ```protobuf
 instance_group [
   {
-    count: 2              # Number of instances per GPU
+    count: 1              # One instance per model
     kind: KIND_GPU
   }
 ]
 ```
-- Load balancing across multiple GPUs
-- Configurable instance count per model
+- Single instance per model for predictable performance
+- Can be scaled up for higher throughput
+- Multi-GPU support available via instance configuration
 
 ### Client Integration
 
@@ -234,12 +213,10 @@ pixi run download-large      # Download large model (224.4M params)
 
 pixi run setup               # Complete setup: download + clone + export
 pixi run export-onnx         # Export models to ONNX
-pixi run test                # Run tests
+pixi run test-sam2           # Run inference test
 pixi run format              # Format code with black
 pixi run lint                # Lint code with ruff
 ```
-
-See `SETUP.md` for detailed setup instructions and configuration options.
 
 #### Docker Deployment
 
@@ -285,15 +262,22 @@ Key metrics:
 
 ### Performance Characteristics
 
-**Expected Latency** (base_plus model on A100):
-- Encoder: ~300ms per image
+**Expected Latency** (base_plus model):
+- Encoder: ~300ms per image (varies by GPU)
 - Decoder: ~15ms per mask
 - End-to-end (1 image, 1 prompt): ~315ms
 - End-to-end (1 image, 10 prompts): ~450ms
 
-**Throughput** (with dynamic batching):
-- Encoder: ~10-15 images/sec (batch size 4)
-- Decoder: ~200-300 masks/sec (batch size 8)
+**GPU Compatibility**:
+- Tested on Blackwell architecture (RTX PRO 6000)
+- Requires Triton 25.01+ for Blackwell support
+- Compatible with Ampere (A100), Hopper, and newer architectures
+- Requires CUDA 12.x drivers
+
+**Throughput**:
+- Single-request latency optimized (no batching by default)
+- Can enable dynamic batching for higher throughput use cases
+- Performance scales with GPU compute capability
 
 **Memory Requirements**:
 - Tiny: ~2GB GPU memory

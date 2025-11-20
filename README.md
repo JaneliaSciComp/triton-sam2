@@ -4,8 +4,7 @@ Production-grade deployment of Meta's Segment Anything Model 2 (SAM2) using NVID
 
 ## Quick Links
 
-- **[QUICKSTART.md](QUICKSTART.md)** - 3-step installation guide
-- **[CLAUDE.md](CLAUDE.md)** - Comprehensive architecture and model details
+- **[CLAUDE.md](CLAUDE.md)** - Comprehensive architecture and deployment details
 
 ## Features
 
@@ -17,7 +16,7 @@ Production-grade deployment of Meta's Segment Anything Model 2 (SAM2) using NVID
 
 ### Triton Benefits
 - **Enterprise-grade**: Industry-standard inference protocol
-- **Performance**: TensorRT optimization + dynamic batching
+- **Performance**: GPU-accelerated ONNX Runtime with dynamic batching support
 - **Scalability**: Native multi-GPU support with load balancing
 - **Observability**: Built-in Prometheus metrics
 - **Flexibility**: Hot-reload models without downtime
@@ -73,12 +72,12 @@ docker compose up -d         # Start server
 ## Architecture Overview
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                     NVIDIA Triton Server                     │
-│                                                              │
+┌────────────────────────────────────────────────────────────┐
+│                    NVIDIA Triton Server                    │
+│                                                            │
 │  ┌──────────────────────┐      ┌──────────────────────┐    │
 │  │   SAM2 Encoder       │      │   SAM2 Decoder       │    │
-│  │   (ONNX/TensorRT)    │      │   (ONNX/TensorRT)    │    │
+│  │   (ONNX Runtime)     │      │   (ONNX Runtime)     │    │
 │  │                      │      │                      │    │
 │  │  Input:              │      │  Inputs:             │    │
 │  │  - Image (1024x1024) │      │  - Embeddings        │    │
@@ -91,9 +90,9 @@ docker compose up -d         # Start server
 │  │                      │      │                      │    │
 │  │                      │      │  ~15ms per mask      │    │
 │  └──────────────────────┘      └──────────────────────┘    │
-│                                                              │
-│  Features: Dynamic Batching, Multi-GPU, TensorRT, Metrics   │
-└─────────────────────────────────────────────────────────────┘
+│                                                            │
+│  Features: GPU Acceleration, Multi-GPU, Metrics, HTTP/gRPC │
+└────────────────────────────────────────────────────────────┘
          ↑                                    ↑
          │                                    │
     HTTP/gRPC API                        Python Client
@@ -132,10 +131,10 @@ This design enables responsive user interfaces where users can click points to s
 ```
 triton_sam/
 ├── CLAUDE.md                 # Detailed architecture documentation
-├── SETUP.md                  # Setup and deployment guide
 ├── README.md                 # This file
 ├── docker-compose.yml        # Triton server deployment
 ├── pyproject.toml            # Pixi configuration and Python dependencies
+├── test_sam2.py              # Test script with visualization
 │
 ├── scripts/
 │   ├── download_sam2.sh      # Download SAM2 checkpoints
@@ -152,11 +151,207 @@ triton_sam/
 │       └── config.pbtxt
 │
 ├── client_examples/
-│   └── inference_client.py   # Python client example
+│   └── inference_client.py   # Python client library
 │
 ├── checkpoints/              # Downloaded model weights
+├── sam2_repo/                # Cloned SAM2 repository
 │
+└── test/
+    ├── images/               # Test input images
+    └── output/               # Generated masks and visualizations
 ```
+
+## Model Export Process
+
+SAM2 models are converted from PyTorch to ONNX format for deployment on Triton. The export process splits the model into two separate components optimized for different inference patterns:
+
+### Two-Stage Architecture
+
+**Stage 1: Encoder (Expensive)**
+- **Input**: RGB image (1, 3, 1024, 1024)
+- **Output**: Image embeddings (1, 256, 64, 64)
+- **Purpose**: Processes the full image once to generate reusable embeddings
+- **Typical latency**: 200-800ms depending on model size
+- **Usage pattern**: Run once per image, cache embeddings
+
+**Stage 2: Decoder (Fast)**
+- **Inputs**:
+  - Image embeddings (1, 256, 64, 64)
+  - Point coordinates (B, N, 2) - user click positions
+  - Point labels (B, N) - foreground (1) or background (0)
+- **Outputs**:
+  - Segmentation masks (B, 1, 256, 256) - logits (threshold at 0)
+  - IoU predictions (B, 1) - confidence scores
+- **Purpose**: Generate masks from prompts using cached embeddings
+- **Typical latency**: 10-30ms per mask
+- **Usage pattern**: Run many times with different prompts per image
+
+### Export Process Details
+
+The `export_sam2_to_onnx.py` script handles several critical transformations:
+
+#### 1. Model Loading
+```python
+model = build_sam2(model_cfg, checkpoint, device="cpu")
+```
+- Uses CPU for export (models will run on GPU in Triton)
+- Loads SAM2.1 architecture with Hiera backbone
+
+#### 2. Encoder Export
+```python
+torch.onnx.export(
+    encoder,
+    dummy_input,
+    output_path,
+    opset_version=17,
+    dynamic_axes={"image": {0: "batch_size"}}
+)
+```
+- Exports image encoder as standalone model
+- Dynamic batch size support for batching requests
+- ONNX opset 17 for compatibility with Triton
+
+#### 3. Decoder Export with Fixes
+```python
+class SAM2DecoderONNX(torch.nn.Module):
+    def forward(self, image_embeddings, point_coords, point_labels):
+        # Disable high_res_features to avoid unpacking issues
+        self.sam_mask_decoder.use_high_res_features = False
+
+        low_res_masks, iou_predictions, _, _ = self.sam_mask_decoder(
+            image_embeddings=image_embeddings,
+            image_pe=self.sam_prompt_encoder.get_dense_pe(),
+            sparse_prompt_embeddings=sparse_embeddings,
+            dense_prompt_embeddings=dense_embeddings,
+            multimask_output=False,
+            high_res_features=None
+        )
+```
+
+**Key fix**: SAM2.1's `use_high_res_features` flag is temporarily disabled during export to prevent unpacking errors. This feature expects a tuple of high-resolution feature maps that aren't available during ONNX tracing.
+
+#### 4. Dynamic Axes Configuration
+```python
+dynamic_axes={
+    "point_coords": {0: "batch_size", 1: "num_points"},
+    "point_labels": {0: "batch_size", 1: "num_points"},
+    "masks": {0: "batch_size"}
+}
+```
+- Supports variable batch sizes for dynamic batching
+- Supports variable number of prompt points per request
+
+### Why CPU Export?
+
+The models are exported on CPU but run on GPU in Triton because:
+1. **CUDA availability**: Pixi environments may not have PyTorch with CUDA
+2. **Portability**: CPU export works on any machine
+3. **Performance**: Export is a one-time operation; runtime performance is unaffected
+4. **Compatibility**: Ensures ONNX operators are compatible across devices
+
+## Scripts Documentation
+
+### download_sam2.sh
+
+Downloads SAM2.1 model checkpoints from Meta's official repository.
+
+**Usage:**
+```bash
+bash scripts/download_sam2.sh [MODEL_SIZE]
+```
+
+**Arguments:**
+- `MODEL_SIZE`: One of `tiny`, `small`, `base_plus`, `large` (default: `base_plus`)
+
+**Example:**
+```bash
+# Download base_plus model (recommended)
+bash scripts/download_sam2.sh base_plus
+
+# Download tiny model for edge deployment
+bash scripts/download_sam2.sh tiny
+```
+
+**Behavior:**
+- Downloads checkpoint to `checkpoints/sam2.1_hiera_[SIZE].pt`
+- Skips download if checkpoint already exists
+- Validates model size argument
+- Uses wget for reliable downloads (~150-350MB depending on model)
+
+**Model URLs:**
+- Tiny (38.9M): `https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_tiny.pt`
+- Small (46M): `https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_small.pt`
+- Base Plus (80.8M): `https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_base_plus.pt`
+- Large (224.4M): `https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_large.pt`
+
+**Pixi Tasks:**
+```bash
+pixi run download-tiny    # Download tiny model
+pixi run download-small   # Download small model
+pixi run download-base    # Download base_plus model
+pixi run download-large   # Download large model
+```
+
+### export_sam2_to_onnx.py
+
+Exports SAM2 PyTorch models to ONNX format for Triton deployment.
+
+**Usage:**
+```bash
+python scripts/export_sam2_to_onnx.py \
+    --checkpoint CHECKPOINT \
+    --model-cfg MODEL_CFG \
+    [--output-dir OUTPUT_DIR] \
+    [--image-size IMAGE_SIZE] \
+    [--device DEVICE]
+```
+
+**Arguments:**
+- `--checkpoint` (required): Path to SAM2 checkpoint file (e.g., `checkpoints/sam2.1_hiera_base_plus.pt`)
+- `--model-cfg` (required): Path to SAM2 config YAML (e.g., `sam2_repo/sam2/configs/sam2.1/sam2.1_hiera_b+.yaml`)
+- `--output-dir`: Output directory for ONNX models (default: `model_repository`)
+- `--image-size`: Input image size (default: `1024`)
+- `--device`: Export device (default: `cpu`, can be `cuda` if available)
+
+**Example:**
+```bash
+python scripts/export_sam2_to_onnx.py \
+    --checkpoint checkpoints/sam2.1_hiera_base_plus.pt \
+    --model-cfg sam2_repo/sam2/configs/sam2.1/sam2.1_hiera_b+.yaml \
+    --output-dir model_repository \
+    --device cpu
+```
+
+**Output Structure:**
+```
+model_repository/
+├── sam2_encoder/
+│   └── 1/
+│       └── model.onnx    # Encoder ONNX model (~320MB for base_plus)
+└── sam2_decoder/
+    └── 1/
+        └── model.onnx    # Decoder ONNX model (~180MB for base_plus)
+```
+
+**Process:**
+1. Loads SAM2 model from checkpoint
+2. Exports image encoder with dynamic batch size
+3. Exports decoder with wrapper class that:
+   - Combines prompt encoder + mask decoder
+   - Disables high_res_features for ONNX compatibility
+   - Configures dynamic axes for batching
+4. Saves models to Triton model repository structure
+
+**Pixi Task:**
+```bash
+pixi run export-onnx   # Exports base_plus model by default
+```
+
+**Important Notes:**
+- Uses ONNX opset 17 for Triton compatibility
+- Disables `use_high_res_features` to prevent unpacking errors
+- Supports dynamic batch sizes for Triton's dynamic batching
+- Export warnings about TracerWarning are normal and suppressed
 
 ## Performance Expectations
 
@@ -166,9 +361,11 @@ triton_sam/
 - End-to-end (1 image, 1 mask): ~315ms
 - End-to-end (1 image, 10 masks): ~450ms
 
-### Throughput (with dynamic batching)
-- Encoder: 10-15 images/second
-- Decoder: 200-300 masks/second
+### Throughput
+- Single-request optimized (no batching by default)
+- Encoder: ~3-5 images/second per instance
+- Decoder: ~60-100 masks/second per instance
+- Can enable dynamic batching for higher concurrent throughput
 
 
 ## Monitoring and Debugging
@@ -211,10 +408,10 @@ docker logs sam2-triton-server -f --timestamps
 - Reduce batch sizes
 
 ### Slow Inference
-- Enable TensorRT (already configured)
-- Use FP16 precision (already configured)
 - Check GPU utilization: `nvidia-smi`
-- Adjust dynamic batching parameters
+- Verify ONNX Runtime is using GPU (check server logs)
+- Ensure CUDA drivers are up to date (12.x recommended)
+- Consider using a smaller model (tiny or small) for faster inference
 
 ### Model Not Loading
 - Verify ONNX files exist in correct paths
