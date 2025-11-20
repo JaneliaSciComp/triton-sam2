@@ -1,0 +1,102 @@
+[project]
+name = "triton-sam"
+version = "0.1.0"
+description = "GPU-accelerated image segmentation using SAM2 on NVIDIA Triton Inference Server"
+authors = [{name = "HHMI Janelia", email = "scicompsoft@janelia.hhmi.org"}]
+requires-python = ">=3.10"
+readme = "CLAUDE.md"
+license = {text = "Janelia Open-Source Software License"}
+
+dependencies = [
+    "torch>=2.0.0",
+    "torchvision>=0.15.0",
+    "numpy>=1.24.0",
+    "opencv-python>=4.8.0",
+    "onnx>=1.14.0",
+    "onnxruntime-gpu>=1.16.0",
+    "tritonclient[all]>=2.40.0",
+    "requests>=2.31.0",
+    "pillow>=10.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "black>=23.0.0",
+    "ruff>=0.1.0",
+]
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.pixi.workspace]
+channels = ["conda-forge", "pytorch", "nvidia"]
+platforms = ["linux-64"]
+
+# Note: No PyPI dependencies needed at install time
+# SAM2 will be installed via the install-sam2 task after cloning
+
+[tool.pixi.dependencies]
+python = ">=3.10,<3.13"
+pip = "*"
+pytorch = ">=2.0.0"
+torchvision = ">=0.15.0"
+pytorch-cuda = "12.4.*"
+numpy = ">=1.24.0"
+opencv = ">=4.8.0"
+onnx = ">=1.14.0"
+requests = ">=2.31.0"
+pillow = ">=10.0.0"
+wget = "*"
+
+[tool.pixi.tasks]
+# Download SAM2 model checkpoints
+download-tiny = "bash scripts/download_sam2.sh tiny"
+download-small = "bash scripts/download_sam2.sh small"
+download-base = "bash scripts/download_sam2.sh base_plus"
+download-large = "bash scripts/download_sam2.sh large"
+
+# Clone SAM2 repository if not present
+clone-sam2 = { cmd = "git clone https://github.com/facebookresearch/segment-anything-2.git sam2_repo || echo 'Repository already exists'", depends-on = [] }
+
+# Install SAM2 from cloned repository
+install-sam2 = { cmd = "python -m pip install -e sam2_repo", depends-on = ["clone-sam2"] }
+
+# Export models to ONNX (using CPU for export, models will run on GPU in Triton)
+export-onnx = { cmd = """
+python scripts/export_sam2_to_onnx.py \
+    --checkpoint checkpoints/sam2.1_hiera_base_plus.pt \
+    --model-cfg configs/sam2.1/sam2.1_hiera_b+.yaml \
+    --output-dir model_repository \
+    --device cpu
+""", depends-on = ["download-base", "install-sam2"] }
+
+# Full setup: download model, clone repo, install SAM2, export to ONNX
+setup = { depends-on = ["download-base", "install-sam2", "export-onnx"] }
+
+# Run tests
+test = "pytest tests/ -v"
+test-sam2 = "python test_sam2.py"
+
+# Format code
+format = "black ."
+lint = "ruff check ."
+
+[tool.pixi.feature.dev.dependencies]
+pytest = ">=7.4.0"
+black = ">=23.0.0"
+ruff = ">=0.1.0"
+ipython = "*"
+
+[tool.pixi.environments]
+default = { solve-group = "default" }
+dev = { features = ["dev"], solve-group = "default" }
+
+[tool.black]
+line-length = 100
+target-version = ['py310', 'py311', 'py312']
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"

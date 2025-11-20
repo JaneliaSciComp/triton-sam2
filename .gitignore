@@ -1,0 +1,47 @@
+# Model checkpoints and weights
+checkpoints/*.pt
+checkpoints/*.pth
+
+# ONNX models
+model_repository/*/1/*.onnx
+
+# SAM2 repository clone
+sam2_repo/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+*.egg-info/
+dist/
+build/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.claude/
+
+# Output files
+*.png
+*.jpg
+*.jpeg
+output_*/
+masks/
+
+# Logs
+*.log
+
+# Docker
+.env
+
+# Temporary files
+tmp/
+temp/
