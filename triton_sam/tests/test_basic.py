@@ -11,7 +11,7 @@ import numpy as np
 import cv2
 from pathlib import Path
 
-from triton_sam2 import SAM2TritonClient
+from triton_sam import SAM2TritonClient
 
 # Directory setup
 TEST_DIR = Path("test")

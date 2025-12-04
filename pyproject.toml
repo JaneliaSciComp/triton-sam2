@@ -31,7 +31,7 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-packages = ["triton_sam2", "triton_sam2.tests"]
+packages = ["triton_sam", "triton_sam.tests"]
 
 [tool.pixi.workspace]
 channels = ["conda-forge", "pytorch", "nvidia"]
@@ -79,8 +79,8 @@ python scripts/export_sam2_to_onnx.py \
 setup = { depends-on = ["download-base", "install-sam2", "export-onnx"] }
 
 # Run tests
-test-sam2 = "python -m triton_sam2.tests.test_basic"
-test-speculative = "python -m triton_sam2.tests.test_speculative"
+test-sam2 = "python -m triton_sam.tests.test_basic"
+test-speculative = "python -m triton_sam.tests.test_speculative"
 
 # Format code
 format = "black ."

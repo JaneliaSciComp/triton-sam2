@@ -134,7 +134,7 @@ triton_sam/
 ├── docker-compose.yml        # Triton server deployment
 ├── pyproject.toml            # Pixi configuration and Python dependencies
 │
-├── triton_sam2/              # Python client module
+├── triton_sam/               # Python client module
 │   ├── __init__.py           # Module exports
 │   ├── client.py             # Basic synchronous client
 │   ├── speculative_client.py # Async client with request cancellation
@@ -165,16 +165,16 @@ triton_sam/
     └── output/               # Generated masks and visualizations
 ```
 
-## Python Client Module (`triton_sam2`)
+## Python Client Module (`triton_sam`)
 
-The `triton_sam2` module provides Python clients for interacting with SAM2 models on Triton.
+The `triton_sam` module provides Python clients for interacting with SAM2 models on Triton.
 
 ### Basic Client (`SAM2TritonClient`)
 
 Synchronous client for simple inference workflows:
 
 ```python
-from triton_sam2 import SAM2TritonClient
+from triton_sam import SAM2TritonClient
 
 # Initialize client
 client = SAM2TritonClient("localhost:8000")
@@ -197,7 +197,7 @@ binary_mask = (masks[0, 0] > 0).astype(np.uint8)
 Asynchronous client with request cancellation for interactive workflows:
 
 ```python
-from triton_sam2 import SpeculativeSAM2Client, queue_multiple_requests
+from triton_sam import SpeculativeSAM2Client, queue_multiple_requests
 import asyncio
 
 async def interactive_segmentation():

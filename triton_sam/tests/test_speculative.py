@@ -19,7 +19,7 @@ import numpy as np
 import cv2
 from pathlib import Path
 
-from triton_sam2 import (
+from triton_sam import (
     SpeculativeSAM2Client,
     queue_multiple_requests,
     wait_for_latest_result

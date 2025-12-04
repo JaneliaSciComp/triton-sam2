@@ -98,17 +98,17 @@ instance_group [
 
 ### Client Integration
 
-The `triton_sam2` Python module provides two client implementations:
+The `triton_sam` Python module provides two client implementations:
 
 1. **SAM2TritonClient** - Synchronous client for basic inference workflows
 2. **SpeculativeSAM2Client** - Asynchronous client with request cancellation for interactive applications
 
 #### Basic Python Client (Synchronous)
 
-Using the `triton_sam2` module:
+Using the `triton_sam` module:
 
 ```python
-from triton_sam2 import SAM2TritonClient
+from triton_sam import SAM2TritonClient
 
 # Initialize client
 client = SAM2TritonClient("localhost:8000")
@@ -131,7 +131,7 @@ binary_mask = (masks[0, 0] > 0).astype(np.uint8)
 For interactive applications that need request cancellation:
 
 ```python
-from triton_sam2 import SpeculativeSAM2Client, queue_multiple_requests
+from triton_sam import SpeculativeSAM2Client, queue_multiple_requests
 import asyncio
 
 async def interactive_workflow():
@@ -161,7 +161,7 @@ async def interactive_workflow():
 - Thread-safe operation
 - Perfect for mouse-driven interactive segmentation
 
-See `triton_sam2/client.py` and `triton_sam2/speculative_client.py` for implementation details.
+See `triton_sam/client.py` and `triton_sam/speculative_client.py` for implementation details.
 
 #### HTTP API Example
 
