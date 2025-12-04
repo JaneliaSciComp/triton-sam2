@@ -50,12 +50,11 @@ curl http://localhost:8000/v2/health/ready
 ### Test Inference
 
 ```bash
-# Run inference with the example client
-pixi run python client_examples/inference_client.py \
-    --image path/to/image.jpg \
-    --points 512,512 \
-    --output mask.png \
-    --visualize
+# Run basic inference test
+pixi run test-sam2
+
+# Run speculative request stress test
+pixi run test-speculative
 ```
 
 ### Manual Setup (Alternative)
@@ -134,7 +133,15 @@ triton_sam/
 ├── README.md                 # This file
 ├── docker-compose.yml        # Triton server deployment
 ├── pyproject.toml            # Pixi configuration and Python dependencies
-├── test_sam2.py              # Test script with visualization
+│
+├── triton_sam2/              # Python client module
+│   ├── __init__.py           # Module exports
+│   ├── client.py             # Basic synchronous client
+│   ├── speculative_client.py # Async client with request cancellation
+│   └── tests/
+│       ├── __init__.py
+│       ├── test_basic.py     # Basic inference tests
+│       └── test_speculative.py # Speculative request tests
 │
 ├── scripts/
 │   ├── download_sam2.sh      # Download SAM2 checkpoints
@@ -150,9 +157,6 @@ triton_sam/
 │       │   └── model.onnx
 │       └── config.pbtxt
 │
-├── client_examples/
-│   └── inference_client.py   # Python client library
-│
 ├── checkpoints/              # Downloaded model weights
 ├── sam2_repo/                # Cloned SAM2 repository
 │
@@ -160,6 +164,86 @@ triton_sam/
     ├── images/               # Test input images
     └── output/               # Generated masks and visualizations
 ```
+
+## Python Client Module (`triton_sam2`)
+
+The `triton_sam2` module provides Python clients for interacting with SAM2 models on Triton.
+
+### Basic Client (`SAM2TritonClient`)
+
+Synchronous client for simple inference workflows:
+
+```python
+from triton_sam2 import SAM2TritonClient
+
+# Initialize client
+client = SAM2TritonClient("localhost:8000")
+
+# Encode image once (cached)
+client.set_image("image.jpg")
+
+# Predict masks from point prompts
+masks, iou = client.predict(
+    point_coords=[[512, 512]],  # (x, y) in original image space
+    point_labels=[1]             # 1=foreground, 0=background
+)
+
+# Threshold logits at 0 for binary mask
+binary_mask = (masks[0, 0] > 0).astype(np.uint8)
+```
+
+### Speculative Client (`SpeculativeSAM2Client`)
+
+Asynchronous client with request cancellation for interactive workflows:
+
+```python
+from triton_sam2 import SpeculativeSAM2Client, queue_multiple_requests
+import asyncio
+
+async def interactive_segmentation():
+    client = SpeculativeSAM2Client("localhost:8000")
+    client.set_image("image.jpg")
+
+    session_id = "user_session_1"
+
+    # Queue many requests (simulating mouse movement)
+    coords_list = [np.array([[x, y]]) for x, y in mouse_positions]
+    labels_list = [np.array([1]) for _ in mouse_positions]
+
+    tasks = await queue_multiple_requests(
+        client, coords_list, labels_list, session_id
+    )
+
+    # Cancel intermediate requests when user stops moving
+    client.cancel_session_requests(session_id)
+
+    # Get final result
+    result = await wait_for_latest_result(tasks, client, session_id)
+    if result:
+        masks, iou = result
+        # Process final mask...
+```
+
+**Features:**
+- Request ID tracking by session
+- Bulk cancellation of pending requests
+- Thread-safe request management
+- Perfect for interactive tools like Paintera
+
+### Running Tests
+
+```bash
+# Basic inference test
+pixi run test-sam2
+
+# Speculative request stress test
+pixi run test-speculative
+```
+
+The stress test simulates:
+- Mouse movement with rapid request generation
+- Request cancellation patterns
+- Multi-session concurrent workflows
 
 ## Model Export Process
 

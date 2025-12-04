@@ -10,11 +10,8 @@ Tests SAM2 inference with proper directory organization:
 import numpy as np
 import cv2
 from pathlib import Path
-import sys
 
-# Add client to path
-sys.path.insert(0, 'client_examples')
-from inference_client import SAM2TritonClient
+from triton_sam2 import SAM2TritonClient
 
 # Directory setup
 TEST_DIR = Path("test")

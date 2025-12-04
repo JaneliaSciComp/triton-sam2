@@ -98,39 +98,70 @@ instance_group [
 
 ### Client Integration
 
-#### Python Client Example
+The `triton_sam2` Python module provides two client implementations:
+
+1. **SAM2TritonClient** - Synchronous client for basic inference workflows
+2. **SpeculativeSAM2Client** - Asynchronous client with request cancellation for interactive applications
+
+#### Basic Python Client (Synchronous)
+
+Using the `triton_sam2` module:
 
 ```python
-import tritonclient.http as httpclient
-import numpy as np
+from triton_sam2 import SAM2TritonClient
 
-# Connect to Triton
-client = httpclient.InferenceServerClient(url="localhost:8000")
+# Initialize client
+client = SAM2TritonClient("localhost:8000")
 
-# 1. Encode image (once)
-image_tensor = preprocess_image("image.jpg")
-encoder_input = httpclient.InferInput("image", image_tensor.shape, "FP32")
-encoder_input.set_data_from_numpy(image_tensor)
+# 1. Encode image (once) - automatically cached
+client.set_image("image.jpg")
 
-response = client.infer("sam2_encoder", [encoder_input])
-embeddings = response.as_numpy("image_embeddings")
+# 2. Predict masks from prompts (many times)
+masks, iou = client.predict(
+    point_coords=[[512, 512]],  # (x, y) in original image space
+    point_labels=[1]             # 1=foreground, 0=background
+)
 
-# 2. Decode with prompts (many times)
-point_coords = np.array([[512, 512]], dtype=np.float32)
-point_labels = np.array([1], dtype=np.float32)
-
-decoder_inputs = [
-    httpclient.InferInput("image_embeddings", embeddings.shape, "FP32"),
-    httpclient.InferInput("point_coords", point_coords.shape, "FP32"),
-    httpclient.InferInput("point_labels", point_labels.shape, "FP32")
-]
-
-response = client.infer("sam2_decoder", decoder_inputs)
-masks = response.as_numpy("masks")
-iou = response.as_numpy("iou_predictions")
+# Threshold logits at 0 for binary mask
+binary_mask = (masks[0, 0] > 0).astype(np.uint8)
 ```
 
-See `client_examples/inference_client.py` for a complete implementation.
+#### Speculative Python Client (Asynchronous)
+
+For interactive applications that need request cancellation:
+
+```python
+from triton_sam2 import SpeculativeSAM2Client, queue_multiple_requests
+import asyncio
+
+async def interactive_workflow():
+    client = SpeculativeSAM2Client("localhost:8000")
+    client.set_image("image.jpg")
+
+    session_id = "user_session_1"
+
+    # Queue many requests speculatively
+    coords_list = [np.array([[x, y]]) for x, y in mouse_positions]
+    labels_list = [np.array([1]) for _ in mouse_positions]
+
+    tasks = await queue_multiple_requests(
+        client, coords_list, labels_list, session_id
+    )
+
+    # Cancel intermediate requests
+    client.cancel_session_requests(session_id)
+
+    # Get final result
+    result = await wait_for_latest_result(tasks, client, session_id)
+```
+
+**Features:**
+- Session-based request tracking
+- Bulk cancellation by session ID
+- Thread-safe operation
+- Perfect for mouse-driven interactive segmentation
+
+See `triton_sam2/client.py` and `triton_sam2/speculative_client.py` for implementation details.
 
 #### HTTP API Example
 
@@ -196,12 +227,10 @@ docker compose up -d
 
 4. **Test inference**:
 ```bash
-pixi run python client_examples/inference_client.py \
-    --image test_image.jpg \
-    --points 512,512 \
-    --output mask.png \
-    --visualize
+pixi run test-sam2
 ```
+
+This runs the comprehensive test suite that segments multiple shapes and saves visualizations.
 
 #### Available Pixi Tasks
 
@@ -213,7 +242,10 @@ pixi run download-large      # Download large model (224.4M params)
 
 pixi run setup               # Complete setup: download + clone + export
 pixi run export-onnx         # Export models to ONNX
-pixi run test-sam2           # Run inference test
+
+pixi run test-sam2           # Run basic inference test
+pixi run test-speculative    # Run speculative request stress test
+
 pixi run format              # Format code with black
 pixi run lint                # Lint code with ruff
 ```
