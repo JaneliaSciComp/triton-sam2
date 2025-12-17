@@ -53,12 +53,18 @@ requests = ">=2.31.0"
 pillow = ">=10.0.0"
 wget = "*"
 
+[tool.pixi.pypi-dependencies]
+huggingface-hub = ">=0.20.0"
+
 [tool.pixi.tasks]
 # Download SAM2 model checkpoints
 download-tiny = "bash scripts/download_sam2.sh tiny"
 download-small = "bash scripts/download_sam2.sh small"
 download-base = "bash scripts/download_sam2.sh base_plus"
 download-large = "bash scripts/download_sam2.sh large"
+
+# HuggingFace authentication
+hf-login = "python scripts/hf_login.py"
 
 # Clone SAM2 repository if not present
 clone-sam2 = { cmd = "git clone https://github.com/facebookresearch/segment-anything-2.git sam2_repo || echo 'Repository already exists'", depends-on = [] }
@@ -78,8 +84,15 @@ python scripts/export_sam2_to_onnx.py \
 # Full setup: download model, clone repo, install SAM2, export to ONNX
 setup = { depends-on = ["download-base", "install-sam2", "export-onnx"] }
 
+# Download pre-exported SAM3 Tracker ONNX models from onnx-community
+download-sam3-onnx = "python scripts/download_sam3_onnx.py"
+
+# Full SAM3 setup (just download pre-exported ONNX models)
+setup-sam3 = { depends-on = ["download-sam3-onnx"] }
+
 # Run tests
 test-sam2 = "python -m triton_sam.tests.test_basic"
+test-sam3 = "python -m triton_sam.tests.test_sam3"
 test-speculative = "python -m triton_sam.tests.test_speculative"
 
 # Format code

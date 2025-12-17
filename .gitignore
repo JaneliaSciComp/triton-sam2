@@ -3,10 +3,11 @@ checkpoints/*.pt
 checkpoints/*.pth
 
 # ONNX models
-model_repository/*/1/*.onnx
+model_repository/**/*.onnx*
 
-# SAM2 repository clone
+# Repository clones
 sam2_repo/
+sam3_repo/
 
 # Python
 __pycache__/
