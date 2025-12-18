@@ -34,7 +34,7 @@ build-backend = "setuptools.build_meta"
 packages = ["triton_sam", "triton_sam.tests"]
 
 [tool.pixi.workspace]
-channels = ["conda-forge", "pytorch", "nvidia"]
+channels = ["conda-forge"]
 platforms = ["linux-64"]
 
 # Note: No PyPI dependencies needed at install time
@@ -43,9 +43,6 @@ platforms = ["linux-64"]
 [tool.pixi.dependencies]
 python = ">=3.10,<3.13"
 pip = "*"
-pytorch = ">=2.0.0"
-torchvision = ">=0.15.0"
-pytorch-cuda = "12.4.*"
 numpy = ">=1.24.0"
 opencv = ">=4.8.0"
 onnx = ">=1.14.0"
@@ -54,6 +51,8 @@ pillow = ">=10.0.0"
 wget = "*"
 
 [tool.pixi.pypi-dependencies]
+torch = ">=2.0.0"
+torchvision = ">=0.15.0"
 huggingface-hub = ">=0.20.0"
 
 [tool.pixi.tasks]
@@ -94,6 +93,10 @@ setup-sam3 = { depends-on = ["download-sam3-onnx"] }
 test-sam2 = "python -m triton_sam.tests.test_basic"
 test-sam3 = "python -m triton_sam.tests.test_sam3"
 test-speculative = "python -m triton_sam.tests.test_speculative"
+
+# Benchmark SAM3 pipeline
+benchmark-sam3 = "python scripts/benchmark_sam3.py"
+benchmark-sam3-both = "python scripts/benchmark_sam3.py --both"
 
 # Format code
 format = "black ."
