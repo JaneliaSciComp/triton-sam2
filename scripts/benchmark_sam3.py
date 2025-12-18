@@ -125,39 +125,49 @@ def visualize_results(
         point_labels: Point labels (1=foreground, 0=background)
         output_path: Path to save visualization
     """
-    if masks is None:
-        print(f"No masks to visualize")
-        return
+    all_masks = None
+    num_masks = 0
 
-    # Convert masks to numpy
-    if isinstance(masks, torch.Tensor):
-        masks_np = masks.cpu().numpy()
-    else:
-        masks_np = np.array(masks)
+    if masks is not None:
+        # Convert masks to numpy
+        if isinstance(masks, torch.Tensor):
+            masks_np = masks.cpu().numpy()
+        else:
+            masks_np = np.array(masks)
 
-    # Check if masks is empty
-    if masks_np.size == 0:
-        print(f"Warning: Empty masks array, cannot visualize")
-        return
+        # Process masks if not empty
+        if masks_np.size > 0:
+            # Handle different mask shapes
+            # SAM3 returns masks with shape (N, 1, H, W) where N is number of detections
+            # and 1 is a channel dimension that should be squeezed out
+            if masks_np.ndim == 4:  # (num_detections, 1, H, W)
+                if masks_np.shape[0] > 0:
+                    # Squeeze out the channel dimension (axis 1), keep all detections
+                    masks_np = masks_np.squeeze(axis=1)  # -> (N, H, W)
 
-    # Handle different mask shapes
-    if masks_np.ndim == 4:  # (batch, num_masks, H, W)
-        if masks_np.shape[0] == 0:
-            print(f"Warning: Empty batch dimension in masks")
-            return
-        masks_np = masks_np[0]  # Take first batch
+            # Handle different mask dimensionalities
+            if masks_np.ndim == 3 and masks_np.shape[0] > 0:
+                all_masks = masks_np
+                num_masks = all_masks.shape[0]
+            elif masks_np.ndim == 2:
+                all_masks = masks_np[np.newaxis, ...]
+                num_masks = 1
 
-    if masks_np.ndim == 3:  # (num_masks, H, W)
-        if masks_np.shape[0] == 0:
-            print(f"Warning: No masks in array")
-            return
-        # Take the first mask or combine all
-        mask = masks_np[0]
-    elif masks_np.ndim == 2:
-        mask = masks_np
-    else:
-        print(f"Warning: Unexpected mask shape: {masks_np.shape}")
-        return
+    print(f"Found {num_masks} mask(s) to visualize")
+
+    # Define distinct colors for different instances (RGBA)
+    instance_colors = [
+        [0.12, 0.56, 1.0, 0.6],   # Blue
+        [1.0, 0.27, 0.0, 0.6],    # Orange-red
+        [0.0, 0.8, 0.4, 0.6],     # Green
+        [0.8, 0.0, 0.8, 0.6],     # Magenta
+        [1.0, 0.84, 0.0, 0.6],    # Gold
+        [0.0, 0.8, 0.8, 0.6],     # Cyan
+        [0.6, 0.3, 0.0, 0.6],     # Brown
+        [0.5, 0.0, 0.5, 0.6],     # Purple
+        [0.0, 0.5, 0.0, 0.6],     # Dark green
+        [1.0, 0.41, 0.71, 0.6],   # Hot pink
+    ]
 
     # Create figure with subplots
     fig, axes = plt.subplots(1, 2, figsize=(16, 8))
@@ -201,16 +211,17 @@ def visualize_results(
     # Right: Image with mask overlay
     axes[1].imshow(image)
 
-    # Overlay mask with transparency
-    if mask.ndim == 2:
-        # Create colored mask
-        # Threshold at 0 for logits or 0.5 for binary masks
-        threshold = 0.0 if mask.min() < 0 else 0.5
-        color_mask = np.zeros((*mask.shape, 4))
-        color_mask[mask > threshold] = [0.12, 0.56, 1.0, 0.6]  # Blue with alpha
-        axes[1].imshow(color_mask)
+    # Overlay all masks with different colors (if any)
+    if all_masks is not None:
+        for i, mask in enumerate(all_masks):
+            # Threshold at 0 for logits or 0.5 for binary masks
+            threshold = 0.0 if mask.min() < 0 else 0.5
+            color_mask = np.zeros((*mask.shape, 4))
+            color = instance_colors[i % len(instance_colors)]
+            color_mask[mask > threshold] = color
+            axes[1].imshow(color_mask)
 
-    axes[1].set_title("Segmentation Result", fontsize=14)
+    axes[1].set_title(f"Segmentation Result ({num_masks} instance{'s' if num_masks != 1 else ''})", fontsize=14)
     axes[1].axis("off")
 
     plt.tight_layout()
@@ -218,21 +229,6 @@ def visualize_results(
     plt.close()
 
     print(f"Visualization saved to: {output_path}")
-
-
-def save_masks(masks, output_path: str = "sam3_masks.npy"):
-    """Save masks to numpy file."""
-    if masks is None:
-        print("No masks to save")
-        return
-
-    if isinstance(masks, torch.Tensor):
-        masks_np = masks.cpu().numpy()
-    else:
-        masks_np = np.array(masks)
-
-    np.save(output_path, masks_np)
-    print(f"Masks saved to: {output_path}")
 
 
 def time_step(func, sync_cuda: bool = False):
@@ -249,11 +245,12 @@ def time_step(func, sync_cuda: bool = False):
 def run_sam3_pipeline_with_timing(
     model,
     image_path: str,
-    text_prompt: str = "shoe",
+    text_prompt: str = None,
     box_prompt: List[float] = None,
     point_coords: List[List[float]] = None,
     point_labels: List[int] = None,
     device: str = "cuda",
+    confidence_threshold: float = 0.3,
     return_outputs: bool = False
 ) -> Dict[str, float]:
     """
@@ -305,8 +302,7 @@ def run_sam3_pipeline_with_timing(
     # inference pipeline. Sets confidence threshold for detection filtering.
 
     def create_processor():
-        # Use lower confidence threshold to get more masks
-        return Sam3Processor(model, confidence_threshold=0.01, device=device)
+        return Sam3Processor(model, confidence_threshold=confidence_threshold, device=device)
 
     processor, t = time_step(create_processor, sync_cuda)
     timings["create_processor"] = t
@@ -482,14 +478,15 @@ def run_sam3_pipeline_with_timing(
 
 
 def benchmark_sam3(
-    n_iterations: int = 10,
+    n_iterations: int = 1,
     device: str = "cuda",
-    text_prompt: str = "shoe",
+    text_prompt: str = None,
     box_prompt: List[float] = None,
     point_coords: List[List[float]] = None,
     point_labels: List[int] = None,
     image_path: str = None,
     model_checkpoint: str = None,
+    confidence_threshold: float = 0.3,
     visualize: bool = False,
     output_dir: str = "."
 ):
@@ -527,6 +524,7 @@ def benchmark_sam3(
         prompt_type = "None"
 
     print(f"Prompt type: {prompt_type}")
+    print(f"Confidence threshold: {confidence_threshold}")
     if text_prompt:
         print(f"Text prompt: '{text_prompt}'")
     if box_prompt:
@@ -605,6 +603,7 @@ def benchmark_sam3(
             point_coords=point_coords,
             point_labels=point_labels,
             device=device,
+            confidence_threshold=confidence_threshold,
             return_outputs=return_outputs
         )
 
@@ -660,7 +659,6 @@ def benchmark_sam3(
         # Create output filename
         os.makedirs(output_dir, exist_ok=True)
         output_path = os.path.join(output_dir, "sam3_result.png")
-        masks_path = os.path.join(output_dir, "sam3_masks.npy")
 
         visualize_results(
             image=image,
@@ -671,8 +669,6 @@ def benchmark_sam3(
             point_labels=point_labels,
             output_path=output_path
         )
-
-        save_masks(masks, output_path=masks_path)
         print()
 
     return stats
@@ -685,8 +681,8 @@ def main():
     parser.add_argument(
         "-n", "--iterations",
         type=int,
-        default=10,
-        help="Number of iterations to run (default: 10)"
+        default=1,
+        help="Number of iterations to run (default: 1)"
     )
     parser.add_argument(
         "-d", "--device",
@@ -703,8 +699,8 @@ def main():
     parser.add_argument(
         "-t", "--text-prompt",
         type=str,
-        default="shoe",
-        help="Text prompt for segmentation (default: 'shoe')"
+        default=None,
+        help="Text prompt for segmentation"
     )
     parser.add_argument(
         "-b", "--box-prompt",
@@ -736,6 +732,12 @@ def main():
         "-c", "--checkpoint",
         type=str,
         help="Path to model checkpoint"
+    )
+    parser.add_argument(
+        "--confidence",
+        type=float,
+        default=0.3,
+        help="Confidence threshold for detections (default: 0.3)"
     )
     parser.add_argument(
         "--visualize",
@@ -785,6 +787,7 @@ def main():
             point_labels=point_labels,
             image_path=args.image,
             model_checkpoint=args.checkpoint,
+            confidence_threshold=args.confidence,
             visualize=args.visualize,
             output_dir=args.output_dir
         )
@@ -798,6 +801,7 @@ def main():
             point_labels=point_labels,
             image_path=args.image,
             model_checkpoint=args.checkpoint,
+            confidence_threshold=args.confidence,
             visualize=args.visualize,
             output_dir=args.output_dir
         )
@@ -811,6 +815,7 @@ def main():
             point_labels=point_labels,
             image_path=args.image,
             model_checkpoint=args.checkpoint,
+            confidence_threshold=args.confidence,
             visualize=args.visualize,
             output_dir=args.output_dir
         )
