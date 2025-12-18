@@ -431,6 +431,43 @@ def run_sam3_pipeline_with_timing(
         inference_state, t = time_step(add_box_prompt, sync_cuda)
         timings["add_box_prompt"] = t
 
+    elif point_coords:
+        # ========================================================================
+        # Point-Only Workflow
+        # ========================================================================
+        # Uses PROMPT ENCODER (points) + MASK DECODER
+        # No text encoding or detection, purely geometric prompting
+        # Uses "visual" as dummy text to make model rely on geometric prompts
+
+        def add_point_prompt():
+            processor.reset_all_prompts(inference_state)
+
+            # Set dummy text prompt to enable geometric-only mode
+            dummy_text_outputs = processor.model.backbone.forward_text(
+                ["visual"], device=device
+            )
+            inference_state["backbone_out"].update(dummy_text_outputs)
+
+            if "geometric_prompt" not in inference_state:
+                inference_state["geometric_prompt"] = processor.model._get_dummy_prompt()
+
+            # Normalize points to [0, 1] range
+            norm_points = torch.tensor(point_coords, dtype=torch.float32)
+            norm_points[:, 0] = norm_points[:, 0] / width
+            norm_points[:, 1] = norm_points[:, 1] / height
+
+            # Add points to geometric prompt encoder
+            inference_state["geometric_prompt"].input_points = norm_points.unsqueeze(0).to(device)
+            inference_state["geometric_prompt"].input_points_mask = torch.ones(
+                (1, len(point_coords)), dtype=torch.bool, device=device
+            )
+
+            # MASK DECODER + MASK MERGING: Generate final segmentation masks
+            return processor._forward_grounding(inference_state)
+
+        inference_state, t = time_step(add_point_prompt, sync_cuda)
+        timings["add_point_prompt"] = t
+
     # ============================================================================
     # STEP 5: Get Masks (Retrieval - not a SAM3 component)
     # ============================================================================
@@ -583,6 +620,7 @@ def benchmark_sam3(
         "add_text_prompt": TimingStats("Add Text Prompt"),
         "add_text_and_points": TimingStats("Add Text + Points"),
         "add_box_prompt": TimingStats("Add Box Prompt"),
+        "add_point_prompt": TimingStats("Add Point Prompt"),
         "get_masks": TimingStats("Get Masks"),
         "total_pipeline": TimingStats("Total Pipeline"),
     }
@@ -640,6 +678,8 @@ def benchmark_sam3(
         step_order.append("add_text_prompt")
     elif box_prompt:
         step_order.append("add_box_prompt")
+    elif point_coords:
+        step_order.append("add_point_prompt")
 
     step_order.extend(["get_masks", "total_pipeline"])
 
