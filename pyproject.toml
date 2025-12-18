@@ -94,6 +94,10 @@ test-sam2 = "python -m triton_sam.tests.test_basic"
 test-sam3 = "python -m triton_sam.tests.test_sam3"
 test-speculative = "python -m triton_sam.tests.test_speculative"
 
+# Benchmark SAM2 pipeline
+benchmark-sam2 = "python scripts/benchmark_sam2.py"
+benchmark-sam2-both = "python scripts/benchmark_sam2.py --both"
+
 # Benchmark SAM3 pipeline
 benchmark-sam3 = "python scripts/benchmark_sam3.py"
 benchmark-sam3-both = "python scripts/benchmark_sam3.py --both"
