@@ -94,13 +94,21 @@ test-sam2 = "python -m triton_sam.tests.test_basic"
 test-sam3 = "python -m triton_sam.tests.test_sam3"
 test-speculative = "python -m triton_sam.tests.test_speculative"
 
-# Benchmark SAM2 pipeline
+# Benchmark SAM2 pipeline (image mode)
 benchmark-sam2 = "python scripts/benchmark_sam2.py"
 benchmark-sam2-both = "python scripts/benchmark_sam2.py --both"
 
-# Benchmark SAM3 pipeline
+# Benchmark SAM3 pipeline (image mode)
 benchmark-sam3 = "python scripts/benchmark_sam3.py"
 benchmark-sam3-both = "python scripts/benchmark_sam3.py --both"
+
+# Benchmark SAM2 video pipeline (requires -v VIDEO and prompts)
+# Example: pixi run benchmark-sam2-video -- -v video.mp4 -p 100 200 -l 1
+benchmark-sam2-video = "python scripts/benchmark_sam2.py"
+
+# Benchmark SAM3 video pipeline (requires -v VIDEO and prompts)
+# Example: pixi run benchmark-sam3-video -- -v video.mp4 -t "the dog"
+benchmark-sam3-video = "python scripts/benchmark_sam3.py"
 
 # Format code
 format = "black ."

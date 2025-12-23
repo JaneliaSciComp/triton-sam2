@@ -67,13 +67,16 @@ from PIL import Image
 sam3_repo_path = Path(__file__).parent.parent / "sam3_repo"
 sys.path.insert(0, str(sam3_repo_path))
 
+import cv2
 import sam3
 from sam3 import build_sam3_image_model
 from sam3.model.box_ops import box_xywh_to_cxcywh
 from sam3.model.sam3_image_processor import Sam3Processor
+from sam3.model.sam3_video_predictor import Sam3VideoPredictor
 from sam3.visualization_utils import normalize_bbox
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
+from tqdm import tqdm
 
 
 class TimingStats:
@@ -240,6 +243,321 @@ def time_step(func, sync_cuda: bool = False):
     end = time.perf_counter()
     duration_ms = (end - start) * 1000  # Convert to milliseconds
     return result, duration_ms
+
+
+# =============================================================================
+# VIDEO MODE FUNCTIONS
+# =============================================================================
+
+# Define distinct colors for video overlay (BGR format for cv2)
+VIDEO_COLORS = [
+    (255, 144, 30),    # Blue
+    (0, 69, 255),      # Orange-red
+    (102, 204, 0),     # Green
+    (204, 0, 204),     # Magenta
+    (0, 215, 255),     # Gold
+    (204, 204, 0),     # Cyan
+    (0, 76, 153),      # Brown
+    (128, 0, 128),     # Purple
+    (0, 128, 0),       # Dark green
+    (180, 105, 255),   # Hot pink
+]
+
+
+def create_mask_overlay_cv2(frame: np.ndarray, masks: np.ndarray, alpha: float = 0.5) -> np.ndarray:
+    """
+    Create a colored mask overlay on a video frame.
+
+    Args:
+        frame: BGR frame from cv2 (H, W, 3)
+        masks: Mask array (num_objects, H, W) with values > 0 for foreground
+        alpha: Overlay transparency (0-1)
+
+    Returns:
+        Frame with mask overlay (H, W, 3)
+    """
+    overlay = frame.copy()
+
+    if masks is None:
+        return overlay
+
+    # Convert to numpy if needed
+    if isinstance(masks, torch.Tensor):
+        masks_np = masks.cpu().numpy()
+    else:
+        masks_np = np.array(masks)
+
+    # Handle different shapes
+    if masks_np.ndim == 2:
+        masks_np = masks_np[np.newaxis, ...]
+    elif masks_np.ndim == 4:
+        # (batch, num_objects, H, W) -> (num_objects, H, W)
+        masks_np = masks_np.squeeze(0)
+
+    # Apply each mask with a different color
+    for i, mask in enumerate(masks_np):
+        color = VIDEO_COLORS[i % len(VIDEO_COLORS)]
+        binary_mask = (mask > 0).astype(np.uint8)
+
+        # Resize mask to frame size if needed
+        if binary_mask.shape != frame.shape[:2]:
+            binary_mask = cv2.resize(binary_mask, (frame.shape[1], frame.shape[0]),
+                                     interpolation=cv2.INTER_NEAREST)
+
+        # Create colored overlay
+        colored = np.zeros_like(frame)
+        colored[binary_mask == 1] = color
+        overlay = cv2.addWeighted(overlay, 1.0, colored, alpha, 0)
+
+        # Add contours for better visibility
+        contours, _ = cv2.findContours(binary_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        cv2.drawContours(overlay, contours, -1, (255, 255, 255), 2)
+
+    return overlay
+
+
+def benchmark_sam3_video(
+    video_path: str,
+    output_video_path: str = None,
+    device: str = "cuda",
+    text_prompt: str = None,
+    box_prompt: List[float] = None,
+    point_coords: List[List[float]] = None,
+    point_labels: List[int] = None,
+    model_checkpoint: str = None,
+    alpha: float = 0.5,
+):
+    """
+    Run SAM3 video segmentation benchmark.
+
+    Applies prompts on the first frame and propagates through the video.
+
+    Args:
+        video_path: Path to input MP4 video
+        output_video_path: Path to output video (default: sam3_output.mp4)
+        device: Device to run on ("cuda" or "cpu")
+        text_prompt: Text prompt for segmentation
+        box_prompt: Box prompt in XYWH format [x, y, w, h]
+        point_coords: Point coordinates [[x1, y1], [x2, y2], ...]
+        point_labels: Point labels (1=foreground, 0=background)
+        model_checkpoint: Path to model checkpoint
+        alpha: Mask overlay transparency (0-1)
+    """
+    print(f"\n{'='*80}")
+    print(f"SAM3 Video Pipeline Benchmark")
+    print(f"{'='*80}")
+    print(f"Device: {device.upper()}")
+    print(f"Input video: {video_path}")
+
+    # Determine prompt type
+    if text_prompt:
+        prompt_type = "Text"
+        if box_prompt:
+            prompt_type += " + Box"
+        if point_coords:
+            prompt_type += " + Points"
+    elif box_prompt:
+        prompt_type = "Box"
+        if point_coords:
+            prompt_type += " + Points"
+    elif point_coords:
+        prompt_type = "Points"
+    else:
+        print("ERROR: No prompts provided. Use -t/--text-prompt, -p/--points, or -b/--box-prompt")
+        return
+
+    print(f"Prompt type: {prompt_type}")
+    if text_prompt:
+        print(f"Text prompt: {text_prompt}")
+    if box_prompt:
+        print(f"Box prompt (XYWH): {box_prompt}")
+    if point_coords:
+        print(f"Point coords: {point_coords}")
+        print(f"Point labels: {point_labels}")
+    print(f"{'='*80}\n")
+
+    # Set device
+    if device == "cuda" and not torch.cuda.is_available():
+        print("WARNING: CUDA not available, falling back to CPU")
+        device = "cpu"
+
+    # Determine paths
+    script_dir = Path(__file__).parent.parent
+
+    if model_checkpoint is None:
+        model_checkpoint = str(script_dir / "checkpoints" / "sam3.pt")
+
+    if output_video_path is None:
+        output_video_path = "sam3_output.mp4"
+
+    # Timing stats
+    timings = {}
+    sync_cuda = (device == "cuda" and torch.cuda.is_available())
+
+    # =========================================================================
+    # STEP 1: Load Video Predictor
+    # =========================================================================
+    print("Loading SAM3 video predictor...")
+    model_start = time.perf_counter()
+
+    predictor = Sam3VideoPredictor(
+        checkpoint_path=model_checkpoint,
+        bpe_path=None,  # Uses default BPE
+    )
+    if sync_cuda:
+        torch.cuda.synchronize()
+    timings["load_model"] = (time.perf_counter() - model_start) * 1000
+    print(f"Model loaded in {timings['load_model']:.2f} ms\n")
+
+    # =========================================================================
+    # STEP 2: Initialize Video Session
+    # =========================================================================
+    print("Initializing video session...")
+    init_start = time.perf_counter()
+
+    session_result = predictor.start_session(resource_path=video_path)
+    session_id = session_result["session_id"]
+
+    if sync_cuda:
+        torch.cuda.synchronize()
+    timings["init_video"] = (time.perf_counter() - init_start) * 1000
+
+    # Get video info from the session
+    inference_state = predictor._ALL_INFERENCE_STATES[session_id]["state"]
+    num_frames = inference_state["num_frames"]
+    video_height = inference_state["video_height"]
+    video_width = inference_state["video_width"]
+
+    print(f"Video initialized: {num_frames} frames, {video_width}x{video_height}")
+    print(f"Session ID: {session_id}")
+    print(f"Init time: {timings['init_video']:.2f} ms\n")
+
+    # =========================================================================
+    # STEP 3: Add Prompts on First Frame
+    # =========================================================================
+    print("Adding prompts on frame 0...")
+    prompt_start = time.perf_counter()
+
+    # Convert box from XYWH to list format expected by SAM3
+    boxes = [[box_prompt[0], box_prompt[1], box_prompt[2], box_prompt[3]]] if box_prompt else None
+    box_labels = [1] if box_prompt else None  # 1 = positive box
+
+    # Add prompt on frame 0
+    predictor.add_prompt(
+        session_id=session_id,
+        frame_idx=0,
+        text=text_prompt,
+        points=point_coords,
+        point_labels=point_labels,
+        bounding_boxes=boxes,
+        bounding_box_labels=box_labels,
+    )
+
+    if sync_cuda:
+        torch.cuda.synchronize()
+    timings["add_prompts"] = (time.perf_counter() - prompt_start) * 1000
+    print(f"Prompts added in {timings['add_prompts']:.2f} ms\n")
+
+    # =========================================================================
+    # STEP 4: Propagate Through Video
+    # =========================================================================
+    print("Propagating masks through video...")
+    prop_start = time.perf_counter()
+
+    # Collect all frame masks
+    video_segments = {}
+    frame_count = 0
+
+    for frame_data in tqdm(
+        predictor.propagate_in_video(session_id=session_id),
+        total=num_frames,
+        desc="Propagating"
+    ):
+        frame_idx = frame_data.get("frame_index", frame_count)
+        masks = frame_data.get("masks", None)
+
+        if masks is not None:
+            # Convert masks to binary
+            if isinstance(masks, torch.Tensor):
+                masks = (masks > 0.0).cpu().numpy()
+            else:
+                masks = (np.array(masks) > 0.0)
+
+        video_segments[frame_idx] = {"masks": masks}
+        frame_count += 1
+
+    if sync_cuda:
+        torch.cuda.synchronize()
+    timings["propagation"] = (time.perf_counter() - prop_start) * 1000
+    timings["propagation_per_frame"] = timings["propagation"] / max(num_frames, 1)
+    print(f"\nPropagation complete: {timings['propagation']:.2f} ms total")
+    print(f"Per-frame average: {timings['propagation_per_frame']:.2f} ms\n")
+
+    # =========================================================================
+    # STEP 5: Write Output Video with Overlays
+    # =========================================================================
+    print(f"Writing output video to: {output_video_path}")
+    write_start = time.perf_counter()
+
+    # Open input video to read frames
+    cap = cv2.VideoCapture(video_path)
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    if fps == 0:
+        fps = 30.0  # Default FPS
+
+    # Create video writer
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    out = cv2.VideoWriter(output_video_path, fourcc, fps, (video_width, video_height))
+
+    frame_idx = 0
+    while cap.isOpened():
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        # Get masks for this frame
+        if frame_idx in video_segments and video_segments[frame_idx]["masks"] is not None:
+            masks = video_segments[frame_idx]["masks"]
+            frame_with_overlay = create_mask_overlay_cv2(frame, masks, alpha=alpha)
+        else:
+            frame_with_overlay = frame
+
+        out.write(frame_with_overlay)
+        frame_idx += 1
+
+    cap.release()
+    out.release()
+
+    # Close session
+    predictor.close_session(session_id)
+
+    timings["write_video"] = (time.perf_counter() - write_start) * 1000
+    print(f"Video written in {timings['write_video']:.2f} ms\n")
+
+    # =========================================================================
+    # SUMMARY
+    # =========================================================================
+    timings["total_pipeline"] = sum(v for k, v in timings.items() if k != "propagation_per_frame")
+
+    print("="*80)
+    print(f"RESULTS - SAM3 VIDEO BENCHMARK ({device.upper()})")
+    print("="*80)
+    print(f"{'Step':<30} {'Time (ms)':<15}")
+    print("-"*80)
+    print(f"{'Load Model':<30} {timings['load_model']:<15.2f}")
+    print(f"{'Initialize Video':<30} {timings['init_video']:<15.2f}")
+    print(f"{'Add Prompts (Frame 0)':<30} {timings['add_prompts']:<15.2f}")
+    print(f"{'Propagation (Total)':<30} {timings['propagation']:<15.2f}")
+    print(f"{'Propagation (Per Frame)':<30} {timings['propagation_per_frame']:<15.2f}")
+    print(f"{'Write Output Video':<30} {timings['write_video']:<15.2f}")
+    print("-"*80)
+    print(f"{'TOTAL PIPELINE':<30} {timings['total_pipeline']:<15.2f}")
+    print("="*80)
+    print(f"\nOutput: {output_video_path}")
+    print(f"Frames: {num_frames}, FPS: {fps:.1f}")
+    print()
+
+    return timings
 
 
 def run_sam3_pipeline_with_timing(
@@ -791,6 +1109,25 @@ def main():
         help="Directory to save visualizations (default: current directory)"
     )
 
+    # Video mode arguments
+    parser.add_argument(
+        "-v", "--video",
+        type=str,
+        help="Path to MP4 video file (enables video mode)"
+    )
+    parser.add_argument(
+        "--output-video",
+        type=str,
+        default=None,
+        help="Output video path (default: sam3_output.mp4)"
+    )
+    parser.add_argument(
+        "--alpha",
+        type=float,
+        default=0.5,
+        help="Mask overlay transparency for video mode (0-1, default: 0.5)"
+    )
+
     args = parser.parse_args()
 
     # Parse point coordinates
@@ -815,7 +1152,26 @@ def main():
     # Determine text prompt (None if box-only prompt)
     text_prompt = None if (args.box_prompt and not point_coords) else args.text_prompt
 
-    # Run benchmark
+    # Check for video mode
+    if args.video:
+        # VIDEO MODE
+        if not os.path.exists(args.video):
+            parser.error(f"Video file not found: {args.video}")
+
+        benchmark_sam3_video(
+            video_path=args.video,
+            output_video_path=args.output_video,
+            device=args.device,
+            text_prompt=text_prompt,
+            box_prompt=args.box_prompt,
+            point_coords=point_coords,
+            point_labels=point_labels,
+            model_checkpoint=args.checkpoint,
+            alpha=args.alpha,
+        )
+        return
+
+    # IMAGE MODE - Run benchmark
     if args.both:
         # Run on both CPU and GPU
         benchmark_sam3(
