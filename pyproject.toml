@@ -13,6 +13,7 @@ dependencies = [
     "numpy>=1.24.0",
     "opencv-python>=4.8.0",
     "onnx>=1.14.0",
+    "onnxscript>=0.1.0",
     "onnxruntime-gpu>=1.16.0",
     "tritonclient[all]>=2.40.0",
     "requests>=2.31.0",
@@ -54,6 +55,7 @@ wget = "*"
 torch = ">=2.0.0"
 torchvision = ">=0.15.0"
 huggingface-hub = ">=0.20.0"
+onnxscript = ">=0.1.0"
 
 [tool.pixi.tasks]
 # =============================================================================
