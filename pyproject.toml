@@ -56,38 +56,84 @@ torchvision = ">=0.15.0"
 huggingface-hub = ">=0.20.0"
 
 [tool.pixi.tasks]
+# =============================================================================
+# SAM1 Tasks
+# =============================================================================
+
+# Download SAM1 model checkpoints
+download-sam1-h = "bash scripts/download_sam1.sh vit_h"
+download-sam1-l = "bash scripts/download_sam1.sh vit_l"
+download-sam1-b = "bash scripts/download_sam1.sh vit_b"
+
+# Clone SAM1 repository if not present
+clone-sam1 = { cmd = "git clone https://github.com/facebookresearch/segment-anything.git sam1_repo || echo 'SAM1 repository already exists'", depends-on = [] }
+
+# Install SAM1 from cloned repository
+install-sam1 = { cmd = "python -m pip install -e sam1_repo", depends-on = ["clone-sam1"] }
+
+# Export SAM1 to ONNX
+export-sam1 = { cmd = """
+python scripts/export_sam1_to_onnx.py \
+    --checkpoint checkpoints/sam_vit_h_4b8939.pth \
+    --model-type vit_h \
+    --output-dir model_repository \
+    --device cpu
+""", depends-on = ["download-sam1-h", "install-sam1"] }
+
+# Full SAM1 setup
+setup-sam1 = { depends-on = ["download-sam1-h", "install-sam1", "export-sam1"] }
+
+# =============================================================================
+# SAM2 Tasks
+# =============================================================================
+
 # Download SAM2 model checkpoints
 download-tiny = "bash scripts/download_sam2.sh tiny"
 download-small = "bash scripts/download_sam2.sh small"
 download-base = "bash scripts/download_sam2.sh base_plus"
 download-large = "bash scripts/download_sam2.sh large"
 
-# HuggingFace authentication
-hf-login = "python scripts/hf_login.py"
-
 # Clone SAM2 repository if not present
-clone-sam2 = { cmd = "git clone https://github.com/facebookresearch/segment-anything-2.git sam2_repo || echo 'Repository already exists'", depends-on = [] }
+clone-sam2 = { cmd = "git clone https://github.com/facebookresearch/segment-anything-2.git sam2_repo || echo 'SAM2 repository already exists'", depends-on = [] }
 
 # Install SAM2 from cloned repository
 install-sam2 = { cmd = "python -m pip install -e sam2_repo", depends-on = ["clone-sam2"] }
 
-# Export models to ONNX (using CPU for export, models will run on GPU in Triton)
-export-onnx = { cmd = """
+# Export SAM2 to ONNX
+export-sam2 = { cmd = """
 python scripts/export_sam2_to_onnx.py \
     --checkpoint checkpoints/sam2.1_hiera_base_plus.pt \
-    --model-cfg configs/sam2.1/sam2.1_hiera_b+.yaml \
+    --model-cfg sam2_repo/sam2/configs/sam2.1/sam2.1_hiera_b+.yaml \
     --output-dir model_repository \
     --device cpu
 """, depends-on = ["download-base", "install-sam2"] }
 
-# Full setup: download model, clone repo, install SAM2, export to ONNX
-setup = { depends-on = ["download-base", "install-sam2", "export-onnx"] }
+# Alias for backward compatibility
+export-onnx = { depends-on = ["export-sam2"] }
+
+# Full SAM2 setup
+setup = { depends-on = ["download-base", "install-sam2", "export-sam2"] }
+setup-sam2 = { depends-on = ["setup"] }
+
+# =============================================================================
+# SAM3 Tasks
+# =============================================================================
 
 # Download pre-exported SAM3 Tracker ONNX models from onnx-community
 download-sam3-onnx = "python scripts/download_sam3_onnx.py"
 
 # Full SAM3 setup (just download pre-exported ONNX models)
 setup-sam3 = { depends-on = ["download-sam3-onnx"] }
+
+# =============================================================================
+# Combined Setup Tasks
+# =============================================================================
+
+# Setup all models (SAM1 + SAM2 + SAM3)
+setup-all = { depends-on = ["setup-sam1", "setup-sam2", "setup-sam3"] }
+
+# HuggingFace authentication (needed for some models)
+hf-login = "python scripts/hf_login.py"
 
 # Run tests
 test-sam2 = "python -m triton_sam.tests.test_basic"
