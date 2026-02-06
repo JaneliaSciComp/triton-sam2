@@ -145,7 +145,7 @@ def main():
         "--model-cfg",
         type=str,
         default="configs/sam2.1/sam2.1_hiera_b+.yaml",
-        help="Path to SAM2 model config file"
+        help="SAM2 model config name (relative to sam2 package, e.g., configs/sam2.1/sam2.1_hiera_b+.yaml)"
     )
     parser.add_argument(
         "--output-dir",

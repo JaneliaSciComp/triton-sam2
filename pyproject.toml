@@ -105,7 +105,7 @@ install-sam2 = { cmd = "python -m pip install -e sam2_repo", depends-on = ["clon
 export-sam2 = { cmd = """
 python scripts/export_sam2_to_onnx.py \
     --checkpoint checkpoints/sam2.1_hiera_base_plus.pt \
-    --model-cfg sam2_repo/sam2/configs/sam2.1/sam2.1_hiera_b+.yaml \
+    --model-cfg configs/sam2.1/sam2.1_hiera_b+.yaml \
     --output-dir model_repository \
     --device cpu
 """, depends-on = ["download-base", "install-sam2"] }
