@@ -1,0 +1,60 @@
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: triton-gateway
+  namespace: sam-service-triton
+  annotations:
+    cert-utils-operator.redhat-cop.io/certs-from-secret: sam-service-triton-tls
+spec:
+  gatewayClassName: data-science-gateway-class
+  listeners:
+  - name: https
+    protocol: HTTPS
+    port: 443
+    hostname: sam-service-triton.int.janelia.org
+    tls:
+      mode: Terminate
+      certificateRefs:
+      - name: sam-service-triton-tls
+        kind: Secret
+    allowedRoutes:
+      namespaces:
+        from: Same
+
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: triton-http-route
+  namespace: sam-service-triton
+spec:
+  parentRefs:
+  - name: triton-gateway
+  hostnames:
+  - sam-service-triton.int.janelia.org
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /inference.GRPCInferenceService
+      headers:
+      - name: content-type
+        value: application/grpc
+    backendRefs:
+    - name: triton-server
+      port: 8001
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /v2
+    backendRefs:
+    - name: triton-server
+      port: 8000
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /
+    backendRefs:
+    - name: triton-server
+      port: 8000

@@ -1,0 +1,68 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: triton-server
+  namespace: sam-service-triton
+  labels:
+    app: triton-server
+    component: sam2-inference
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: triton-server
+  template:
+    metadata:
+      labels:
+        app: triton-server
+        component: sam2-inference
+    spec:
+      containers:
+      - name: triton
+        image: nvcr.io/nvidia/tritonserver:25.01-py3
+        command:
+          - tritonserver
+        args:
+          - --model-repository=/models
+          - --log-verbose=1
+          - --grpc-use-ssl=false 
+        ports:
+        - containerPort: 8000
+          name: http
+          protocol: TCP
+        - containerPort: 8001
+          name: grpc
+          protocol: TCP
+        - containerPort: 8002
+          name: metrics
+          protocol: TCP
+        volumeMounts:
+        - name: model-repository
+          mountPath: /models
+        - name: dshm
+          mountPath: /dev/shm
+        env:
+        - name: CUDA_VISIBLE_DEVICES
+          value: "0"
+        resources:
+          limits:
+            nvidia.com/gpu: 1
+          requests:
+            nvidia.com/gpu: 1
+            memory: 8Gi
+            cpu: 2
+      volumes:
+      - name: model-repository
+        persistentVolumeClaim:
+          claimName: triton-models-pvc
+      - name: dshm
+        emptyDir:
+          medium: Memory
+          sizeLimit: 2Gi
+      # Required for GPU nodes
+      nodeSelector:
+        nvidia.com/gpu.present: "true"
+      tolerations:
+      - key: nvidia.com/gpu
+        operator: Exists
+        effect: NoSchedule
