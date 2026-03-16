@@ -4,6 +4,8 @@ SAM Triton Inference Client
 Basic synchronous client for SAM2/SAM3 inference using Triton Inference Server.
 """
 
+import os
+
 import numpy as np
 import cv2
 import tritonclient.http as httpclient
@@ -33,12 +35,13 @@ class SAM2TritonClient:
         >>> masks, iou = client.predict([[512, 512]], [1])
     """
 
-    def __init__(self, triton_url="localhost:8000", model_type="sam2"):
+    def __init__(self, triton_url=None, model_type="sam2"):
         """
         Initialize the client.
 
         Args:
-            triton_url: URL of the Triton server (default: localhost:8000)
+            triton_url: URL of the Triton server. Falls back to TRITON_URL
+                       env var, then localhost:8000.
             model_type: Model to use - "sam2" or "sam3" (default: "sam2")
                        SAM3 Tracker is backward compatible with SAM2 API
 
@@ -46,10 +49,14 @@ class SAM2TritonClient:
             RuntimeError: If server or models are not ready
             ValueError: If model_type is invalid
         """
+        if triton_url is None:
+            triton_url = os.environ.get("TRITON_URL", "localhost:8000")
         if model_type not in ["sam2", "sam3"]:
             raise ValueError(f"Invalid model_type: {model_type}. Must be 'sam2' or 'sam3'")
 
-        self.client = httpclient.InferenceServerClient(url=triton_url)
+        use_ssl = triton_url.startswith("https://")
+        triton_url = triton_url.replace("https://", "").replace("http://", "")
+        self.client = httpclient.InferenceServerClient(url=triton_url, ssl=use_ssl)
         self.model_type = model_type
         self.encoder_model = f"{model_type}_encoder"
         self.decoder_model = f"{model_type}_decoder"
