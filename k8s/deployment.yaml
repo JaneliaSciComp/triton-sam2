@@ -8,6 +8,8 @@ metadata:
     component: sam2-inference
 spec:
   replicas: 1
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: triton-server
@@ -43,14 +45,40 @@ spec:
           mountPath: /dev/shm
         env:
         - name: CUDA_VISIBLE_DEVICES
-          value: "0"
+          value: "0,1"
         resources:
-          limits:
-            nvidia.com/gpu: 1
           requests:
-            nvidia.com/gpu: 1
-            memory: 8Gi
-            cpu: 2
+            cpu: "4"
+            memory: 16Gi
+            nvidia.com/gpu: 2
+          limits:
+            cpu: "8"
+            memory: 24Gi
+            nvidia.com/gpu: 2
+        livenessProbe:
+          httpGet:
+            path: /v2/health/live
+            port: 8000
+          initialDelaySeconds: 60
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /v2/health/ready
+            port: 8000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 10
+          failureThreshold: 3
+        startupProbe:
+          httpGet:
+            path: /v2/health/live
+            port: 8000
+          initialDelaySeconds: 60
+          periodSeconds: 10
+          timeoutSeconds: 10
+          failureThreshold: 60
       volumes:
       - name: model-repository
         persistentVolumeClaim:
