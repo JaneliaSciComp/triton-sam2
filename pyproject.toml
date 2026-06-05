@@ -96,7 +96,7 @@ download-base = "bash scripts/download_sam2.sh base_plus"
 download-large = "bash scripts/download_sam2.sh large"
 
 # Clone SAM2 repository if not present
-clone-sam2 = { cmd = "git clone https://github.com/facebookresearch/segment-anything-2.git sam2_repo || echo 'SAM2 repository already exists'", depends-on = [] }
+clone-sam2 = { cmd = "git clone https://github.com/facebookresearch/sam2.git sam2_repo || echo 'SAM2 repository already exists'", depends-on = [] }
 
 # Install SAM2 from cloned repository
 install-sam2 = { cmd = "python -m pip install -e sam2_repo", depends-on = ["clone-sam2"] }
