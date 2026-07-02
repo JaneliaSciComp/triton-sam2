@@ -64,6 +64,12 @@ model_repository/
 ├── sam2_decoder/
 │   ├── 1/model.onnx
 │   └── config.pbtxt
+├── sam2_preprocess/           # Python backend: JPEG bytes -> [1,3,1024,1024] FP32
+│   ├── 1/model.py
+│   └── config.pbtxt
+├── sam2_encoder_jpeg/         # ensemble: sam2_preprocess -> sam2_encoder (one call)
+│   ├── 1/                     # required but empty for an ensemble
+│   └── config.pbtxt
 ├── sam3_encoder/
 │   ├── 1/vision_encoder.onnx
 │   └── config.pbtxt
@@ -141,6 +147,32 @@ instance_group [
   mask predictions can run concurrently against cached embeddings
 - Scale instance counts up for higher throughput; multi-GPU is supported by
   raising the instance count and exposing more devices to the container
+
+#### JPEG-Decode Preprocess Ensemble (`sam2_encoder_jpeg`)
+
+To avoid sending a 12.6 MB FP32 tensor over the wire, a client may instead send a
+single JPEG (already resized/padded to 1024×1024) and let the server decode it:
+
+- **`sam2_preprocess`** — a Python-backend model that takes an `encoded_image`
+  `BYTES` tensor (one JPEG), decodes it with Pillow, and emits `image`, an FP32
+  `[1,3,1024,1024]` planar-RGB tensor scaled to `[0,1]`. It does **not** resize —
+  the client must send a 1024×1024 JPEG (the model raises if not).
+- **`sam2_encoder_jpeg`** — an ensemble that pipes `sam2_preprocess` → the SAM2
+  encoder so the client makes one `infer()` call and gets the encoder embeddings
+  back (`image_embed`, `high_res_feats_0`, `high_res_feats_1`).
+
+Pillow is not in the stock Triton image, so the server is now built from the
+repo `Dockerfile` (Triton + Pillow); `docker compose` builds it automatically.
+
+> **Encoder naming / outputs.** The *deployed* encoder (in the cluster) is named
+> `sam2.1_large_encoder` and emits three tensors — `high_res_feats_0`
+> `[1,32,256,256]`, `high_res_feats_1` `[1,64,128,128]`, `image_embed`
+> `[1,256,64,64]` — which is what the mobile client's on-device decoder consumes.
+> The ensemble's step therefore chains to `sam2.1_large_encoder` and re-exports
+> those three names. Note that this repo's `scripts/export_sam2_to_onnx.py`
+> produces a *different*, single-output (`image_embeddings`) encoder that is not
+> what runs in production; reconciling that export with the deployed model is
+> separate follow-up work.
 
 ### Client Integration
 

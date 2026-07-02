@@ -2,7 +2,10 @@ version: '3.8'
 
 services:
   triton:
-    image: nvcr.io/nvidia/tritonserver:25.01-py3
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: sam2-triton-server:local  # built from Dockerfile (Triton + Pillow)
     container_name: sam2-triton-server
     ports:
       - "8000:8000"  # HTTP

@@ -1,0 +1,53 @@
+name: "sam2_encoder_jpeg"
+platform: "ensemble"
+max_batch_size: 0
+
+# Client sends ONE JPEG (already 1024x1024) and gets encoder embeddings back in a
+# single call. sam2_preprocess decodes the JPEG into the [1,3,1024,1024] FP32
+# tensor, which is piped straight into the SAM2 encoder.
+input [
+  {
+    name: "encoded_image"
+    data_type: TYPE_STRING
+    dims: [ 1 ]
+  }
+]
+
+# Mirrors the DEPLOYED encoder (sam2.1_large_encoder), which emits three tensors.
+# These names/shapes are what the mobile client's on-device decoder consumes.
+output [
+  {
+    name: "high_res_feats_0"
+    data_type: TYPE_FP32
+    dims: [ 1, 32, 256, 256 ]
+  },
+  {
+    name: "high_res_feats_1"
+    data_type: TYPE_FP32
+    dims: [ 1, 64, 128, 128 ]
+  },
+  {
+    name: "image_embed"
+    data_type: TYPE_FP32
+    dims: [ 1, 256, 64, 64 ]
+  }
+]
+
+ensemble_scheduling {
+  step [
+    {
+      model_name: "sam2_preprocess"
+      model_version: -1
+      input_map  { key: "encoded_image" value: "encoded_image" }      # ensemble in    -> preprocess in
+      output_map { key: "image"         value: "preprocessed_image" }  # preprocess out -> shared pipe
+    },
+    {
+      model_name: "sam2.1_large_encoder"
+      model_version: -1
+      input_map  { key: "image"            value: "preprocessed_image" }  # shared pipe -> encoder in
+      output_map { key: "high_res_feats_0" value: "high_res_feats_0" }     # encoder outs -> ensemble outs
+      output_map { key: "high_res_feats_1" value: "high_res_feats_1" }
+      output_map { key: "image_embed"      value: "image_embed" }
+    }
+  ]
+}

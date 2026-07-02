@@ -1,0 +1,25 @@
+name: "sam2_preprocess"
+backend: "python"
+max_batch_size: 0            # explicit leading batch dim of 1, like the encoder
+
+input [
+  {
+    name: "encoded_image"
+    data_type: TYPE_STRING   # Triton's type for BYTES tensors
+    dims: [ 1 ]              # one encoded JPEG per request
+  }
+]
+
+output [
+  {
+    name: "image"
+    data_type: TYPE_FP32
+    dims: [ 1, 3, 1024, 1024 ]
+  }
+]
+
+instance_group [
+  {
+    kind: KIND_CPU
+  }
+]
