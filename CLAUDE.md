@@ -145,6 +145,19 @@ instance_group [
 - Scale instance counts up for higher throughput; multi-GPU is supported by
   raising the instance count and exposing more devices to the container
 
+> **⚠️ Deployed GPU pins are coupled to the GPU count.** The committed configs
+> above use `kind: KIND_GPU` with no explicit device list, but the *deployed*
+> encoder configs (on the cluster PVC) add `instance_group.gpus: [...]` pins to
+> specific ordinals — e.g. `sam2.1_large_encoder` → `[0,1,2,3]`,
+> `sam1_encoder`/`sam3_encoder` → `[4,5]` — which assume the pod is allocated
+> **6 GPUs** (indices 0–5). This is the same "6 GPU" assumption baked into the
+> deployment's `nvidia.com/gpu` request. If the GPU count is ever changed (the
+> cluster admin has suggested prod could run on 1–2), these `gpus: [...]` pins
+> must be updated in lockstep, or Triton will try to place models on ordinals
+> that no longer exist and fail to load. Keep the request count and the deployed
+> `gpus` pins in sync. (The deployment used to hardcode `CUDA_VISIBLE_DEVICES`
+> for the same reason; that was removed once device-plugin fencing was verified.)
+
 #### JPEG-Decode Entry Point (`sam_encoder_jpeg`)
 
 To avoid sending a large FP32 tensor over the wire (~12.6 MB for a 1024×1024
