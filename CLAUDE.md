@@ -64,17 +64,14 @@ model_repository/
 ├── sam2_decoder/
 │   ├── 1/model.onnx
 │   └── config.pbtxt
-├── sam2_preprocess/           # Python backend: JPEG bytes -> [1,3,1024,1024] FP32
-│   ├── 1/model.py
-│   └── config.pbtxt
-├── sam2_encoder_jpeg/         # ensemble: sam2_preprocess -> sam2_encoder (one call)
-│   ├── 1/                     # required but empty for an ensemble
-│   └── config.pbtxt
 ├── sam3_encoder/
 │   ├── 1/vision_encoder.onnx
 │   └── config.pbtxt
-└── sam3_decoder/
-    ├── 1/prompt_encoder_mask_decoder.onnx
+├── sam3_decoder/
+│   ├── 1/prompt_encoder_mask_decoder.onnx
+│   └── config.pbtxt
+└── sam_encoder_jpeg/          # Python/BLS: (JPEG, model_type) -> routes to the
+    ├── 1/model.py             #   matching encoder, returns its embeddings
     └── config.pbtxt
 ```
 
@@ -148,31 +145,46 @@ instance_group [
 - Scale instance counts up for higher throughput; multi-GPU is supported by
   raising the instance count and exposing more devices to the container
 
-#### JPEG-Decode Preprocess Ensemble (`sam2_encoder_jpeg`)
+#### JPEG-Decode Entry Point (`sam_encoder_jpeg`)
 
-To avoid sending a 12.6 MB FP32 tensor over the wire, a client may instead send a
-single JPEG (already resized/padded to 1024×1024) and let the server decode it:
+To avoid sending a large FP32 tensor over the wire (~12.6 MB for a 1024×1024
+image), a client may instead send a single JPEG (already resized/padded to the
+model's input size) and let the server decode it. A single Python-backend model,
+`sam_encoder_jpeg`, handles all three model families:
 
-- **`sam2_preprocess`** — a Python-backend model that takes an `encoded_image`
-  `BYTES` tensor (one JPEG), decodes it with Pillow, and emits `image`, an FP32
-  `[1,3,1024,1024]` planar-RGB tensor scaled to `[0,1]`. It does **not** resize —
-  the client must send a 1024×1024 JPEG (the model raises if not).
-- **`sam2_encoder_jpeg`** — an ensemble that pipes `sam2_preprocess` → the SAM2
-  encoder so the client makes one `infer()` call and gets the encoder embeddings
-  back (`image_embed`, `high_res_feats_0`, `high_res_feats_1`).
+- **Inputs:** `encoded_image` (`BYTES`, one JPEG) and `model_type` (`BYTES`,
+  `"sam1"` | `"sam2"` | `"sam3"`).
+- **What it does:** decodes the JPEG with Pillow, scales to `[0,1]` planar RGB
+  (matching the client's existing `/255` preprocessing — the encoders bake in any
+  further normalization), then dispatches to the matching deployed encoder via
+  **BLS** (`pb_utils.InferenceRequest`) and returns that encoder's outputs. It
+  does **not** resize — the client must send a correctly-sized JPEG, and the
+  model raises if the decoded size is wrong for the chosen `model_type`.
+- **Routing** lives in one `ROUTES` table in `1/model.py`; adding a model family
+  is one entry. Current routes:
 
-Pillow is not in the stock Triton image, so the server is now built from the
-repo `Dockerfile` (Triton + Pillow); `docker compose` builds it automatically.
+  | `model_type` | JPEG size | encoder (deployed) | encoder input | outputs |
+  |--------------|-----------|--------------------|---------------|---------|
+  | `sam1` | 1024×1024 | `sam1_encoder`         | `image`        | `image_embeddings` |
+  | `sam2` | 1024×1024 | `sam2.1_large_encoder` | `image`        | `high_res_feats_0`, `high_res_feats_1`, `image_embed` |
+  | `sam3` | 1008×1008 | `sam3_encoder`         | `pixel_values` | `image_embeddings.0/.1/.2` |
 
-> **Encoder naming / outputs.** The *deployed* encoder (in the cluster) is named
-> `sam2.1_large_encoder` and emits three tensors — `high_res_feats_0`
-> `[1,32,256,256]`, `high_res_feats_1` `[1,64,128,128]`, `image_embed`
-> `[1,256,64,64]` — which is what the mobile client's on-device decoder consumes.
-> The ensemble's step therefore chains to `sam2.1_large_encoder` and re-exports
-> those three names. Note that this repo's `scripts/export_sam2_to_onnx.py`
-> produces a *different*, single-output (`image_embeddings`) encoder that is not
-> what runs in production; reconciling that export with the deployed model is
-> separate follow-up work.
+Because the three encoders return different tensors, `config.pbtxt` declares the
+**union** of all outputs and each call populates only the chosen model's subset.
+The caller must therefore request the specific output names for the `model_type`
+it selected (a request that leaves outputs unspecified defaults to "all" and will
+fail, since only one model's tensors are produced per call).
+
+Pillow is not in the stock Triton image, so the server is built from the repo
+`Dockerfile` (Triton + Pillow); `docker compose` builds it automatically.
+
+> **SAM2 encoder naming.** The `sam2` route targets the *deployed* encoder
+> `sam2.1_large_encoder` (three outputs: `high_res_feats_0` `[1,32,256,256]`,
+> `high_res_feats_1` `[1,64,128,128]`, `image_embed` `[1,256,64,64]`), which is
+> what the mobile client's on-device decoder consumes — not this repo's
+> `scripts/export_sam2_to_onnx.py`, which produces a *different*, single-output
+> (`image_embeddings`) encoder. Reconciling that export with the deployed model
+> is separate follow-up work.
 
 ### Client Integration
 
