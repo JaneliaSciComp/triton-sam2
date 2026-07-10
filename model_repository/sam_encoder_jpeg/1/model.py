@@ -82,12 +82,13 @@ class TritonPythonModel:
                     f"{route['encoder_model']} inference failed: {encoder_response.error().message()}"
                 )
 
-            # re-emit the encoder's outputs under the same names on this model
+            # Pass the encoder's output tensors straight through under the same
+            # names. We reuse the tensor objects rather than calling .as_numpy():
+            # the encoder runs on GPU and returns GPU-resident tensors, which
+            # .as_numpy() cannot convert ("Tensor is stored in GPU"). Handing the
+            # tensors back directly lets Triton move them to the client itself.
             output_tensors = [
-                pb_utils.Tensor(
-                    output_name,
-                    pb_utils.get_output_tensor_by_name(encoder_response, output_name).as_numpy(),
-                )
+                pb_utils.get_output_tensor_by_name(encoder_response, output_name)
                 for output_name in route["encoder_outputs"]
             ]
             responses.append(pb_utils.InferenceResponse(output_tensors=output_tensors))
