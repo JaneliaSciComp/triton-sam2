@@ -37,6 +37,20 @@ class TritonPythonModel:
     def execute(self, requests):
         responses = []
         for request in requests:
+            # A gRPC client may have cancelled this request while it was queued
+            # behind earlier work; skip the JPEG decode and the expensive BLS
+            # encoder call instead of computing a result nobody will read. This
+            # is the only cancellation point: the default (non-batching)
+            # scheduler never drops cancelled requests itself, it just discards
+            # their responses after execution.
+            if request.is_cancelled():
+                responses.append(
+                    pb_utils.InferenceResponse(
+                        error=pb_utils.TritonError("request was cancelled", pb_utils.TritonError.CANCELLED)
+                    )
+                )
+                continue
+
             # "model_type" is a BYTES tensor of shape [1]; pick the route
             model_type_raw = pb_utils.get_input_tensor_by_name(request, "model_type").as_numpy()[0]
             model_type = (
