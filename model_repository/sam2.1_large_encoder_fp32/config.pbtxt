@@ -1,0 +1,49 @@
+name: "sam2.1_large_encoder_fp32"
+backend: "python"
+
+# Benchmarking twin of sam2.1_large_encoder: identical cancel-aware BLS
+# passthrough wrapper, forwarding to the fp32 real ONNX model
+# ("sam2.1_large_encoder_onnx") instead of the fp16 one. Exists so the fp32
+# and fp16 encoders can be compared through the same wrapper shape (dynamic
+# batching, cancellation, priority) rather than by calling the raw ONNX
+# models directly.
+# Wire shapes are unchanged for clients: [1,3,1024,1024] in, [1,...] out.
+max_batch_size: 1
+
+input [
+  {
+    name: "image"
+    data_type: TYPE_FP32
+    dims: [ 3, 1024, 1024 ]
+  }
+]
+
+output [
+  {
+    name: "high_res_feats_0"
+    data_type: TYPE_FP32
+    dims: [ 32, 256, 256 ]
+  },
+  {
+    name: "high_res_feats_1"
+    data_type: TYPE_FP32
+    dims: [ 64, 128, 128 ]
+  },
+  {
+    name: "image_embed"
+    data_type: TYPE_FP32
+    dims: [ 256, 64, 64 ]
+  }
+]
+
+dynamic_batching {
+  priority_levels: 2
+  default_priority_level: 2
+}
+
+instance_group [
+  {
+    count: 1
+    kind: KIND_CPU
+  }
+]
