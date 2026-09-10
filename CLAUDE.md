@@ -197,7 +197,10 @@ Pillow is not in the stock Triton image, so the server is built from the repo
 > what the mobile client's on-device decoder consumes — not this repo's
 > `scripts/export_sam2_to_onnx.py`, which produces a *different*, single-output
 > (`image_embeddings`) encoder. Reconciling that export with the deployed model
-> is separate follow-up work.
+> is separate follow-up work. As of 2026-09-10 the wrapper forwards to
+> `sam2.1_large_encoder_fp16` on dev, so those three outputs are `FLOAT16` on
+> the wire there (not `FP32`); prod still runs the fp32
+> `sam2.1_large_encoder_onnx`.
 
 ### Client Integration
 

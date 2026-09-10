@@ -32,18 +32,18 @@ output [
     dims: [ 1, 256, 64, 64 ]
   },
   {
-    name: "high_res_feats_0"       # sam2
-    data_type: TYPE_FP32
+    name: "high_res_feats_0"       # sam2 -- FP16 since the 2026-09-10 fp16 cutover
+    data_type: TYPE_FP16
     dims: [ 1, 32, 256, 256 ]
   },
   {
-    name: "high_res_feats_1"       # sam2
-    data_type: TYPE_FP32
+    name: "high_res_feats_1"       # sam2 -- FP16 since the 2026-09-10 fp16 cutover
+    data_type: TYPE_FP16
     dims: [ 1, 64, 128, 128 ]
   },
   {
-    name: "image_embed"            # sam2
-    data_type: TYPE_FP32
+    name: "image_embed"            # sam2 -- FP16 since the 2026-09-10 fp16 cutover
+    data_type: TYPE_FP16
     dims: [ 1, 256, 64, 64 ]
   },
   {

@@ -2,7 +2,7 @@ name: "sam2.1_large_encoder"
 backend: "python"
 
 # Cancel-aware wrapper that owns the public name "sam2.1_large_encoder" and
-# forwards to the real ONNX model ("sam2.1_large_encoder_onnx") via BLS. It
+# forwards to the real ONNX model ("sam2.1_large_encoder_fp16") via BLS. It
 # exists because the ONNX export has batch=1 hard-wired, so the ONNX model
 # cannot run under the dynamic-batch scheduler — and only that scheduler drops
 # CANCELLED queued requests before execution (the default scheduler executes
@@ -11,6 +11,9 @@ backend: "python"
 #   - queued requests cancelled by a gRPC client are dropped, never encoded
 #   - request priority works (priority_levels below; 1 = jump the queue)
 # Wire shapes are unchanged for clients: [1,3,1024,1024] in, [1,...] out.
+# Output dtype is FP16 (2026-09-10): the inner model now casts its three
+# outputs to half precision; this wrapper's declared output dtype must match
+# what it passes through untouched.
 max_batch_size: 1
 
 input [
@@ -24,17 +27,17 @@ input [
 output [
   {
     name: "high_res_feats_0"
-    data_type: TYPE_FP32
+    data_type: TYPE_FP16
     dims: [ 32, 256, 256 ]
   },
   {
     name: "high_res_feats_1"
-    data_type: TYPE_FP32
+    data_type: TYPE_FP16
     dims: [ 64, 128, 128 ]
   },
   {
     name: "image_embed"
-    data_type: TYPE_FP32
+    data_type: TYPE_FP16
     dims: [ 256, 64, 64 ]
   }
 ]

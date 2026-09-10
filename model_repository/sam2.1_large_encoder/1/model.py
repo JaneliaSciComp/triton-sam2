@@ -1,6 +1,6 @@
 import triton_python_backend_utils as pb_utils
 
-INNER_MODEL = "sam2.1_large_encoder_onnx"
+INNER_MODEL = "sam2.1_large_encoder_fp16"
 OUTPUT_NAMES = ["high_res_feats_0", "high_res_feats_1", "image_embed"]
 
 
