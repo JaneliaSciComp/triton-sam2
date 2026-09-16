@@ -74,9 +74,31 @@ table above lists.
 
 Two caveats worth knowing:
 
-- **JPEG is lossy**, so the two paths will never be bit-identical for the same
-  image — chroma subsampling in particular shifts red and blue slightly. Use
-  high quality, and expect cosine similarity ~1.0 rather than exact equality.
+- **The JPEG path does not reproduce the raw path's embeddings**, and this is
+  worth understanding before switching a client over. The server's decode is
+  *provably* the same arithmetic — sending one JPEG as `jpeg_image` versus
+  decoding it locally and sending it raw returns **bit-identical** embeddings
+  (the acceptance test gates on this). But JPEG compression itself changes
+  pixels, and these encoders amplify that enormously. Measured on dev:
+
+  | endpoint | raw vs JPEG (quality 100) |
+  |---|---|
+  | `sam1_encoder` | cosine 0.9994 |
+  | `sam2.1_large_encoder` | cosine 0.9945 – 0.9977 |
+  | `sam3_tracker_encoder_fp16` | cosine 0.9657 – 0.9777 |
+
+  The amplification is intrinsic, not a JPEG artifact: the encoders are
+  deterministic (the same tensor twice returns bit-identical output), but a
+  plain gaussian perturbation at input cosine 0.99997 already drops
+  `image_embed` cosine to 0.949. Raising JPEG quality does **not** reliably
+  help — the relationship is not monotonic, because the *direction* of the
+  perturbation matters more than its size.
+
+  Practical upshot: cosine on these embeddings is a hair-trigger metric and a
+  poor proxy for "do I get the same mask". If you adopt the JPEG path, judge it
+  on mask quality, not on embedding similarity — and don't spend bandwidth on
+  quality 100 expecting fidelity, because quality 90 (~10x smaller) is often no
+  worse.
 - **Padding.** Upstream SAM2 and SAM3 resize to a square and never pad. Upstream
   SAM1 pads with zeros *after* normalizing, which a pre-padded JPEG cannot
   reproduce: a black border in the JPEG normalizes to ≈ -2.1, not 0. If you
