@@ -1,19 +1,25 @@
 name: "sam2.1_large_encoder"
 backend: "python"
 
-# Cancel-aware wrapper that owns the public name "sam2.1_large_encoder" and
-# forwards to the real ONNX model ("sam2.1_large_encoder_fp16") via BLS. It
-# exists because the ONNX export has batch=1 hard-wired, so the ONNX model
-# cannot run under the dynamic-batch scheduler — and only that scheduler drops
-# CANCELLED queued requests before execution (the default scheduler executes
-# them and merely discards the response). A python model has no baked batch
-# dim, so this wrapper can batch (trivially, at size 1), which buys:
-#   - queued requests cancelled by a gRPC client are dropped, never encoded
-#   - request priority works (priority_levels below; 1 = jump the queue)
-# Wire shapes are unchanged for clients: [1,3,1024,1024] in, [1,...] out.
-# Output dtype is FP16 (2026-09-10): the inner model now casts its three
-# outputs to half precision; this wrapper's declared output dtype must match
-# what it passes through untouched.
+# Public SAM2.1-large encoder endpoint, FP32 outputs. A client sends EITHER the
+# raw `image` tensor or a `jpeg_image`; this model forwards to the real ONNX
+# encoder, `sam2.1_large_encoder_onnx`, via BLS. See 1/model.py for why the
+# public name is a Python model rather than the ONNX model itself.
+#
+# FP32 IS THE CONTRACT HERE. Released Paintera builds expect these three
+# tensors as FP32 on this endpoint, so this model must keep forwarding to the
+# fp32 ONNX. (Dev briefly pointed this name at the fp16 export on 2026-09-10;
+# that cutover was reverted 2026-09-16.) FP16 output lives at the separate
+# endpoint `sam2.1_large_encoder_fp16`.
+#
+# max_batch_size 1 + dynamic_batching: the batching scheduler is the only one
+# that DROPS cancelled requests while they are still queued (the default
+# scheduler dequeues and executes them, merely discarding the response), and it
+# is what enables request priority. The ONNX export cannot batch -- batch=1 is
+# hard-wired -- which is exactly why the batching lives here instead.
+#
+# Wire shapes: dims below EXCLUDE the leading batch dimension, so `image` is
+# [1,3,1024,1024] on the wire (unchanged) and `jpeg_image` is [1,1].
 max_batch_size: 1
 
 input [
@@ -21,23 +27,36 @@ input [
     name: "image"
     data_type: TYPE_FP32
     dims: [ 3, 1024, 1024 ]
+    # Optional: supply this OR jpeg_image, never both, never neither.
+    # Passed through to the encoder untouched -- the caller has already applied
+    # SAM's normalization.
+    optional: true
+  },
+  {
+    name: "jpeg_image"
+    data_type: TYPE_STRING   # Triton's config type for BYTES tensors
+    dims: [ 1 ]
+    # One JPEG, already scaled to 1024x1024. The server decodes it and applies
+    # ((x/255) - mean) / std from the parameters below, because the SAM2 graph
+    # does not normalize internally.
+    optional: true
   }
 ]
 
 output [
   {
     name: "high_res_feats_0"
-    data_type: TYPE_FP16
+    data_type: TYPE_FP32
     dims: [ 32, 256, 256 ]
   },
   {
     name: "high_res_feats_1"
-    data_type: TYPE_FP16
+    data_type: TYPE_FP32
     dims: [ 64, 128, 128 ]
   },
   {
     name: "image_embed"
-    data_type: TYPE_FP16
+    data_type: TYPE_FP32
     dims: [ 256, 64, 64 ]
   }
 ]
@@ -49,7 +68,36 @@ dynamic_batching {
 
 instance_group [
   {
+    # Must be >= the inner ONNX model's instance count: each BLS .exec() blocks
+    # its instance. sam2.1_large_encoder_onnx runs a single instance.
     count: 1
     kind: KIND_CPU
   }
 ]
+
+parameters: {
+  key: "inner_model"
+  value: { string_value: "sam2.1_large_encoder_onnx" }
+}
+parameters: {
+  key: "tensor_input"
+  value: { string_value: "image" }
+}
+parameters: {
+  key: "output_names"
+  value: { string_value: "high_res_feats_0,high_res_feats_1,image_embed" }
+}
+parameters: {
+  key: "expected_size"
+  value: { string_value: "1024" }
+}
+# torchvision ImageNet constants -- exactly what upstream sam2's
+# SAM2Transforms uses (it resizes to a square and normalizes, no padding).
+parameters: {
+  key: "norm_mean"
+  value: { string_value: "0.485,0.456,0.406" }
+}
+parameters: {
+  key: "norm_std"
+  value: { string_value: "0.229,0.224,0.225" }
+}

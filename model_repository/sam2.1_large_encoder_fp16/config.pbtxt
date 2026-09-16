@@ -1,28 +1,40 @@
 name: "sam2.1_large_encoder_fp16"
-backend: "onnxruntime"
+backend: "python"
 
-# The real SAM2.1 large encoder (the 3-output export the mobile client's
-# decoder consumes), FP16-output variant. It is NOT called directly by
-# clients: the python wrapper model "sam2.1_large_encoder" owns the public
-# name and forwards here via BLS, adding queued-request cancellation and
-# priority support that this ONNX model cannot have itself (its export
-# hard-wires batch=1, so it cannot run under the dynamic-batch scheduler).
-# The 1/model.onnx weights are deployment-managed and not committed. Deployed
-# configs additionally pin instance_group.gpus to environment-specific
-# ordinals.
+# Public SAM2.1-large encoder endpoint with FP16 OUTPUTS. Identical to
+# `sam2.1_large_encoder` in every respect except the inner model and the output
+# dtype, so the two are a clean A/B pair through the same pipeline shape.
 #
-# Unlike sam3_tracker_encoder_fp16 (fp16 weights, FP32 output cast), this
-# export genuinely emits FLOAT16 tensors on the wire -- confirmed against the
-# ONNX graph's declared output elem_types. Replaces sam2.1_large_encoder_onnx
-# (fp32) as of the 2026-09-10 cutover; provided by hulbertc via
-# /misc/public/ForJody on the dev host.
-max_batch_size: 0
+# What "fp16" does and does not mean here: the inner export's WEIGHTS are fp32
+# (222.1M FLOAT initializers, the same count as the fp32 export) and the only
+# fp16 in its graph is three Cast->FLOAT16 nodes on the outputs. So this
+# endpoint is the same network at the same speed; what it saves is wire size,
+# 16.8 MB -> 8.4 MB per response. It does not reduce GPU memory or latency.
+# (Contrast sam3_tracker_encoder_fp16, whose weights really are FLOAT16.)
+#
+# max_batch_size 1 + dynamic_batching: the batching scheduler is the only one
+# that DROPS cancelled requests while they are still queued, and it is what
+# enables request priority. See 1/model.py.
+#
+# Wire shapes: dims below EXCLUDE the leading batch dimension, so `image` is
+# [1,3,1024,1024] on the wire and `jpeg_image` is [1,1].
+max_batch_size: 1
 
 input [
   {
     name: "image"
     data_type: TYPE_FP32
-    dims: [ 1, 3, 1024, 1024 ]
+    dims: [ 3, 1024, 1024 ]
+    # Optional: supply this OR jpeg_image, never both, never neither.
+    # Note the INPUT stays FP32 even on this endpoint -- only the outputs are
+    # half precision. Passed through to the encoder untouched.
+    optional: true
+  },
+  {
+    name: "jpeg_image"
+    data_type: TYPE_STRING   # Triton's config type for BYTES tensors
+    dims: [ 1 ]
+    optional: true
   }
 ]
 
@@ -30,37 +42,55 @@ output [
   {
     name: "high_res_feats_0"
     data_type: TYPE_FP16
-    dims: [ 1, 32, 256, 256 ]
+    dims: [ 32, 256, 256 ]
   },
   {
     name: "high_res_feats_1"
     data_type: TYPE_FP16
-    dims: [ 1, 64, 128, 128 ]
+    dims: [ 64, 128, 128 ]
   },
   {
     name: "image_embed"
     data_type: TYPE_FP16
-    dims: [ 1, 256, 64, 64 ]
+    dims: [ 256, 64, 64 ]
   }
 ]
+
+dynamic_batching {
+  priority_levels: 2
+  default_priority_level: 2
+}
 
 instance_group [
   {
+    # Must be >= the inner ONNX model's instance count: each BLS .exec() blocks
+    # its instance. sam2.1_large_encoder_fp16_onnx runs a single instance.
     count: 1
-    kind: KIND_GPU
+    kind: KIND_CPU
   }
 ]
 
-optimization {
-  cuda {
-    graphs: true
-  }
-  input_pinned_memory {
-    enable: true
-  }
-  output_pinned_memory {
-    enable: true
-  }
+parameters: {
+  key: "inner_model"
+  value: { string_value: "sam2.1_large_encoder_fp16_onnx" }
 }
-
-version_policy: { all { }}
+parameters: {
+  key: "tensor_input"
+  value: { string_value: "image" }
+}
+parameters: {
+  key: "output_names"
+  value: { string_value: "high_res_feats_0,high_res_feats_1,image_embed" }
+}
+parameters: {
+  key: "expected_size"
+  value: { string_value: "1024" }
+}
+parameters: {
+  key: "norm_mean"
+  value: { string_value: "0.485,0.456,0.406" }
+}
+parameters: {
+  key: "norm_std"
+  value: { string_value: "0.229,0.224,0.225" }
+}

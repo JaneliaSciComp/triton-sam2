@@ -1,0 +1,66 @@
+name: "sam2.1_large_encoder_fp16_onnx"
+backend: "onnxruntime"
+max_batch_size: 0
+
+# The SAM2.1-large encoder export with FP16 OUTPUTS. NOT called directly by
+# clients: the Python model `sam2.1_large_encoder_fp16` owns the public name and
+# forwards here via BLS. Renamed from `sam2.1_large_encoder_fp16` when that
+# front end took over the name.
+#
+# The weights here are fp32 (222.1M FLOAT initializers, identical in count to
+# sam2.1_large_encoder_onnx); the only fp16 in the graph is three Cast->FLOAT16
+# nodes on the outputs. Same network, same speed, same GPU footprint as the
+# fp32 export -- it halves the response on the wire and nothing else.
+# (sam3_tracker_encoder_fp16 is the opposite: genuine FLOAT16 weights, FP32
+# outputs.)
+#
+# The 1/model.onnx weights (889 MB, self-contained) are deployment-managed and
+# not committed; provided by hulbertc via /misc/public/ForJody on the dev host.
+# Deployed configs additionally pin instance_group.gpus to environment-specific
+# ordinals.
+input [
+  {
+    name: "image"
+    data_type: TYPE_FP32
+    dims: [ 1, 3, 1024, 1024 ]
+  }
+]
+
+output [
+  {
+    name: "high_res_feats_0"
+    data_type: TYPE_FP16
+    dims: [ 1, 32, 256, 256 ]
+  },
+  {
+    name: "high_res_feats_1"
+    data_type: TYPE_FP16
+    dims: [ 1, 64, 128, 128 ]
+  },
+  {
+    name: "image_embed"
+    data_type: TYPE_FP16
+    dims: [ 1, 256, 64, 64 ]
+  }
+]
+
+instance_group [
+  {
+    count: 1
+    kind: KIND_GPU
+  }
+]
+
+optimization {
+  cuda {
+    graphs: true
+  }
+  input_pinned_memory {
+    enable: true
+  }
+  output_pinned_memory {
+    enable: true
+  }
+}
+
+version_policy: { all { }}
