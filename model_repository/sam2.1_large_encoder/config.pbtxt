@@ -6,11 +6,30 @@ backend: "python"
 # encoder, `sam2.1_large_encoder_onnx`, via BLS. See 1/model.py for why the
 # public name is a Python model rather than the ONNX model itself.
 #
-# FP32 IS THE CONTRACT HERE. Released Paintera builds expect these three
-# tensors as FP32 on this endpoint, so this model must keep forwarding to the
-# fp32 ONNX. (Dev briefly pointed this name at the fp16 export on 2026-09-10;
-# that cutover was reverted 2026-09-16.) FP16 output lives at the separate
-# endpoint `sam2.1_large_encoder_fp16`.
+# ONE endpoint serves both precisions. By default the three tensors come back
+# FP32, which is what released Paintera builds expect and is bit-identical to
+# what this endpoint has always returned. A client that sends the request
+# parameter `request_fp16: true` gets them cast to FLOAT16 instead, halving the
+# response from 16.8 MB to 8.4 MB. Old clients don't know the parameter, don't
+# send it, and are unaffected.
+#
+# This replaces the separate `sam2.1_large_encoder_fp16` endpoint and its
+# ~890 MB of duplicate weights (both removed 2026-09-17). That export was the
+# same fp32 network with three Cast->FLOAT16 nodes on its outputs, so casting
+# here is not an approximation of it: `fp32_output.astype(float16)` was verified
+# BIT-IDENTICAL to what that model returned. Keeping the fp32 weights rather
+# than the fp16 ones is deliberate -- it is the direction that loses nothing
+# (the reverse, upcasting fp16->fp32 for old clients, would have handed them
+# fp16-precision values in an fp32 container), and prod already has this file,
+# so nothing new has to be shipped there.
+#
+# NOTE on the declared output dtype below. Triton does not enforce a python
+# model's declared output dtype -- verified on 25.01: a declared-FP32 output
+# returned as FLOAT16 reaches the client correctly as float16. That is what lets
+# one output name carry either precision. So TYPE_FP32 here means "the default",
+# not "a guarantee", and /v2/models/.../config will understate what the fp16
+# path returns. A client that sizes buffers from the model metadata rather than
+# from the response needs to know this.
 #
 # max_batch_size 1 + dynamic_batching: the batching scheduler is the only one
 # that DROPS cancelled requests while they are still queued (the default

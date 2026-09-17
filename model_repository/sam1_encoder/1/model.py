@@ -1,10 +1,20 @@
 """Cancel-aware encoder front end accepting either a raw tensor or a JPEG.
 
-One file, four deployments: this exact module is used by `sam1_encoder`,
-`sam2.1_large_encoder`, `sam2.1_large_encoder_fp16` and
-`sam3_tracker_encoder_fp16`. Everything model-specific comes from that model's
-`config.pbtxt` `parameters` block, so the copies must stay byte-identical --
-edit one and copy it to the other three.
+One file, three deployments: this exact module is used by `sam1_encoder`,
+`sam2.1_large_encoder` and `sam3_tracker_encoder_fp16`. Everything
+model-specific comes from that model's `config.pbtxt` `parameters` block, so the
+copies must stay byte-identical -- edit one and copy it to the other two.
+
+Half-precision responses: a client may send the request parameter
+`request_fp16: true` to get the embeddings cast to FLOAT16, halving the
+response (SAM2: 16.8 MB -> 8.4 MB). Omitting it returns FP32, so clients that
+predate the option are unaffected -- which is why the option is opt-in rather
+than a separate endpoint. For SAM2 the cast is provably lossless relative to
+the old `sam2.1_large_encoder_fp16` model: that export was the same fp32
+network with three Cast->FLOAT16 nodes bolted on its outputs, and
+`fp32_output.astype(float16)` was verified bit-identical to what it returned.
+Casting here rather than running a second copy of the weights also halves the
+device-to-host transfer, so the fp16 path is cheaper, not more expensive.
 
 Why a Python model owns each public encoder name:
 
@@ -35,6 +45,9 @@ import triton_python_backend_utils as pb_utils
 # to special-case the model family for the JPEG path (the raw tensor input name
 # does differ: `image` for SAM1/SAM2, `pixel_values` for SAM3).
 JPEG_INPUT = "jpeg_image"
+
+# Request parameter (not an input tensor) selecting a half-precision response.
+FP16_PARAM = "request_fp16"
 
 
 class TritonPythonModel:
@@ -113,11 +126,29 @@ class TritonPythonModel:
                     continue
                 encoder_inputs = [pb_utils.Tensor(self.tensor_input, decoded)]
 
-            inner_response = pb_utils.InferenceRequest(
+            # Decide this before dispatching: when a cast is coming, ask the
+            # encoder to hand its outputs back in HOST memory. That copy has to
+            # happen anyway for the response to reach the client, and doing it
+            # here keeps the cast device-agnostic. Casting on the GPU instead
+            # would have to follow the inner model's card -- cupy defaults to
+            # device 0, while e.g. sam1_encoder_onnx is pinned to card 1, which
+            # fails with "Failed to synchronize CUDA device with id 0".
+            want_fp16 = self._wants_fp16(request)
+            inner_request = pb_utils.InferenceRequest(
                 model_name=self.inner_model,
                 requested_output_names=self.output_names,
                 inputs=encoder_inputs,
-            ).exec()
+                **(
+                    {
+                        "preferred_memory": pb_utils.PreferredMemory(
+                            pb_utils.TRITONSERVER_MEMORY_CPU, 0
+                        )
+                    }
+                    if want_fp16
+                    else {}
+                ),
+            )
+            inner_response = inner_request.exec()
             if inner_response.has_error():
                 responses.append(
                     self._error(
@@ -127,18 +158,63 @@ class TritonPythonModel:
                 )
                 continue
 
-            # Hand the encoder's tensors back under the same names, again
-            # without .as_numpy(): they are GPU-resident, and Triton can move
-            # them to the client itself.
-            responses.append(
-                pb_utils.InferenceResponse(
-                    output_tensors=[
-                        pb_utils.get_output_tensor_by_name(inner_response, name)
-                        for name in self.output_names
-                    ]
-                )
-            )
+            tensors = [
+                pb_utils.get_output_tensor_by_name(inner_response, name)
+                for name in self.output_names
+            ]
+            if want_fp16:
+                try:
+                    tensors = [self._to_fp16(t) for t in tensors]
+                except Exception as exc:
+                    responses.append(
+                        self._error(f"could not cast outputs to fp16: {exc}")
+                    )
+                    continue
+
+            # Otherwise hand the encoder's tensors back untouched and under the
+            # same names, without .as_numpy(): they are GPU-resident, and Triton
+            # can move them to the client itself.
+            responses.append(pb_utils.InferenceResponse(output_tensors=tensors))
         return responses
+
+    @staticmethod
+    def _wants_fp16(request):
+        """True if the request asked for a half-precision response.
+
+        Absent parameter -> False, so a client that predates the option keeps
+        getting FP32. Accepts a real JSON boolean or the string "true", since
+        HTTP clients often stringify parameters.
+        """
+        try:
+            raw = request.parameters()
+        except Exception:
+            return False
+        if not raw:
+            return False
+        try:
+            value = json.loads(raw).get(FP16_PARAM, False)
+        except (ValueError, AttributeError):
+            return False
+        if isinstance(value, str):
+            return value.strip().lower() == "true"
+        return bool(value)
+
+    @staticmethod
+    def _to_fp16(tensor):
+        """Cast an output tensor to FLOAT16.
+
+        The tensor is CPU-resident here because the BLS request asked for host
+        memory whenever a cast was coming. numpy rounds to nearest even, which
+        is what an ONNX Cast does, so the result is bit-identical to running a
+        model that had the Cast baked into its graph -- verified against the
+        retired sam2.1_large_encoder_fp16 export.
+
+        Triton does not enforce the dtype declared in config.pbtxt for python
+        models (verified on 25.01), which is what lets one output name carry
+        either precision. The declared FP32 is a default, not a guarantee; see
+        the note in config.pbtxt.
+        """
+        return pb_utils.Tensor(tensor.name(), tensor.as_numpy().astype(np.float16))
 
     def _decode(self, jpeg_tensor):
         """JPEG bytes -> the encoder's [1, 3, H, W] FP32 input tensor."""

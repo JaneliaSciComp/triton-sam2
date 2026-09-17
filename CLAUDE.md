@@ -73,12 +73,11 @@ model_repository/
 │
 │   # Deployed encoder endpoints. Each public name is a Python/BLS front end
 │   # taking EITHER a raw tensor or a JPEG; `<name>_onnx` is the real model.
-│   # The four front ends share one byte-identical 1/model.py.
+│   # The three front ends share one byte-identical 1/model.py.
 ├── sam1_encoder/               ├── sam1_encoder_onnx/
 │   ├── 1/model.py              │   ├── 1/model.onnx + model.onnx.data
 │   └── config.pbtxt            │   └── config.pbtxt
 ├── sam2.1_large_encoder/       ├── sam2.1_large_encoder_onnx/
-├── sam2.1_large_encoder_fp16/  ├── sam2.1_large_encoder_fp16_onnx/
 └── sam3_tracker_encoder_fp16/  └── sam3_tracker_encoder_fp16_onnx/
 ```
 
@@ -181,15 +180,22 @@ the wire per 1024×1024 image.
 
 | public endpoint | raw input | JPEG input | inner ONNX model | outputs |
 |---|---|---|---|---|
-| `sam1_encoder` | `image` [1,3,1024,1024] | `jpeg_image` | `sam1_encoder_onnx` | `image_embeddings` FP32 |
-| `sam2.1_large_encoder` | `image` [1,3,1024,1024] | `jpeg_image` | `sam2.1_large_encoder_onnx` | 3 × FP32 |
-| `sam2.1_large_encoder_fp16` | `image` [1,3,1024,1024] | `jpeg_image` | `sam2.1_large_encoder_fp16_onnx` | 3 × **FP16** |
-| `sam3_tracker_encoder_fp16` | `pixel_values` [1,3,1008,1008] | `jpeg_image` | `sam3_tracker_encoder_fp16_onnx` | 3 × FP32 |
+| `sam1_encoder` | `image` [1,3,1024,1024] | `jpeg_image` | `sam1_encoder_onnx` | `image_embeddings` |
+| `sam2.1_large_encoder` | `image` [1,3,1024,1024] | `jpeg_image` | `sam2.1_large_encoder_onnx` | 3 tensors |
+| `sam3_tracker_encoder_fp16` | `pixel_values` [1,3,1008,1008] | `jpeg_image` | `sam3_tracker_encoder_fp16_onnx` | 3 tensors |
 
 Both inputs are `optional: true`; a request must supply **exactly one**. The
-front ends share one `1/model.py` — byte-identical in all four directories, with
+front ends share one `1/model.py` — byte-identical in all three directories, with
 everything model-specific coming from `config.pbtxt` `parameters`. Edit one and
-copy it to the other three.
+copy it to the other two.
+
+**Half-precision responses.** Outputs default to FP32; the request *parameter*
+`request_fp16: true` casts them to FLOAT16, halving the response (SAM2:
+16.8 MB → 8.4 MB). It is a parameter rather than a separate endpoint so that
+clients predating it are untouched — they don't send it and keep getting FP32
+byte-for-byte. Note Triton does **not** enforce a python model's declared output
+dtype (verified on 25.01), which is what lets one output name carry either
+precision; the FP32 in `config.pbtxt` is a default, not a guarantee.
 
 **Why a Python model owns each name.** The ONNX backend cannot have an optional
 input and cannot decode a JPEG, so the either/or contract has to live in front
@@ -235,13 +241,19 @@ in the stock Triton image, so the server is built from the repo `Dockerfile`
 > `sam3_tracker_encoder_fp16`, not this repo's `sam3_encoder`. Reconciling those
 > exports with the deployed models is separate follow-up work.
 >
-> **`sam2.1_large_encoder` is FP32 and must stay FP32** — released Paintera
-> builds depend on it. FP16 output is a separate endpoint,
-> `sam2.1_large_encoder_fp16`. Note that "fp16" there describes the *response*
-> only: that export's weights are fp32 and the sole fp16 in its graph is three
-> `Cast`→FLOAT16 nodes on the outputs, so it halves the response (16.8 MB →
-> 8.4 MB) at identical speed and GPU footprint. `sam3_tracker_encoder_fp16` is
-> the opposite — genuine FLOAT16 weights, FP32 outputs.
+> **`sam2.1_large_encoder` defaults to FP32 and must keep doing so** — released
+> Paintera builds depend on it. FP16 is opt-in per request via `request_fp16`
+> (above), not a second endpoint or a second copy of the weights.
+> `sam3_tracker_encoder_fp16`, by contrast, has genuine FLOAT16 *weights* and
+> FP32 outputs — its name describes the export, not the response.
+
+**Removed 2026-09-17:** `sam2.1_large_encoder_fp16` and its
+`sam2.1_large_encoder_fp16_onnx` weights (~890 MB), replaced by the
+`request_fp16` parameter on `sam2.1_large_encoder`. That export was the fp32
+network plus three output `Cast`→FLOAT16 nodes, so casting in the front end
+reproduces it **bit-for-bit** — verified against embeddings captured from it
+before deletion. Keeping the fp32 weights rather than the fp16 ones is
+deliberate: it is the lossless direction, and prod already has that file.
 
 **Removed 2026-09-16** (superseded by the above, and all were test-only):
 `sam2_encoder_jpeg` (ensemble; Triton does not propagate cancellation to

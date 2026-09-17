@@ -10,16 +10,16 @@ each encoder's own name, so there is no separate JPEG endpoint and no
 
 ## Endpoints
 
-| endpoint | raw input | shape | JPEG size | outputs | output dtype |
+| endpoint | raw input | shape | JPEG size | outputs | default dtype |
 |---|---|---|---|---|---|
 | `sam1_encoder` | `image` | 1×3×1024×1024 | 1024×1024 | `image_embeddings` | FP32 |
 | `sam2.1_large_encoder` | `image` | 1×3×1024×1024 | 1024×1024 | `image_embed`<br>`high_res_feats_0`<br>`high_res_feats_1` | FP32 |
-| `sam2.1_large_encoder_fp16` | `image` | 1×3×1024×1024 | 1024×1024 | same three | **FP16** |
 | `sam3_tracker_encoder_fp16` | `pixel_values` | 1×3×1008×1008 | 1008×1008 | `image_embeddings.0`<br>`image_embeddings.1`<br>`image_embeddings.2` | FP32 |
 
-`sam2.1_large_encoder` is FP32 and stays FP32 — released Paintera builds depend
-on it. `sam2.1_large_encoder_fp16` is the same model with the response halved
-(16.8 MB → 8.4 MB); its *input* is still FP32.
+One endpoint per model, and **any of them will return FP16 instead if you ask**
+— see [Half-precision responses](#half-precision-responses). There is no
+separate `_fp16` endpoint; the earlier `sam2.1_large_encoder_fp16` was retired
+in favour of the parameter.
 
 SAM3 differs from the others in input name **and** size: `pixel_values` at
 1008×1008. The `_fp16` in its name refers to its weights, not its response.
@@ -45,6 +45,37 @@ Outputs may be requested by name or left unspecified — each endpoint produces
 only its own tensors, so "all" is now correct (unlike the old union-output
 `sam_encoder_jpeg`).
 
+## Half-precision responses
+
+Send the request **parameter** `request_fp16: true` (a parameter, not an input
+tensor) and the embeddings come back as FLOAT16, halving the response — for SAM2,
+16.8 MB → 8.4 MB.
+
+```python
+result = client.infer("sam2.1_large_encoder", inputs=[raw_input],
+                      parameters={"request_fp16": True})
+result.as_numpy("image_embed").dtype     # float16
+```
+
+Omit it and you get FP32, **byte-for-byte what this endpoint returned before the
+option existed**. That is the point of making it a parameter rather than a
+second endpoint: a client that predates it doesn't send it and is unaffected.
+`false`, and the string `"true"`, are both handled.
+
+The cast is exact, not approximate. It reproduces the retired
+`sam2.1_large_encoder_fp16` model bit-for-bit — that export was the same fp32
+network with three `Cast`→FLOAT16 nodes bolted onto its outputs, so casting in
+the front end and casting inside the graph are the same operation. Verified
+against embeddings captured from the old model before it was deleted.
+
+The input stays FP32 either way; this only affects the response.
+
+> **The declared output dtype understates this.** `/v2/models/<name>/config`
+> reports FP32 because that is the default, but the same output name carries
+> FLOAT16 when you ask for it — Triton does not enforce a Python model's
+> declared output dtype. If you size buffers from the model metadata rather than
+> from the response, account for that.
+
 ## Preparing a JPEG
 
 The server does **not** resize. Send a square JPEG at exactly the endpoint's
@@ -60,7 +91,7 @@ normalized = ((x / 255) - mean) / std
 | endpoint | mean | std |
 |---|---|---|
 | `sam1_encoder` | 0.485, 0.456, 0.406 | 0.229, 0.224, 0.225 |
-| `sam2.1_large_encoder`, `..._fp16` | 0.485, 0.456, 0.406 | 0.229, 0.224, 0.225 |
+| `sam2.1_large_encoder` | 0.485, 0.456, 0.406 | 0.229, 0.224, 0.225 |
 | `sam3_tracker_encoder_fp16` | 0.5, 0.5, 0.5 | 0.5, 0.5, 0.5 |
 
 SAM1/SAM2 use the torchvision ImageNet constants — identical to SAM's canonical
@@ -138,14 +169,14 @@ raw_input.set_data_from_numpy(tensor)
 result = client.infer("sam2.1_large_encoder", inputs=[raw_input])
 ```
 
-For `sam2.1_large_encoder_fp16` the identical call returns `float16` arrays —
-only the dtype changes.
+Add `parameters={"request_fp16": True}` to either call to get `float16` arrays
+back — only the dtype changes.
 
 ## Notes
 
 - **Raise the gRPC max message size.** The FP32 encoder response is ~16.8 MB,
-  well over the 4 MiB default. The `_fp16` endpoint halves it but still exceeds
-  the default.
+  well over the 4 MiB default. `request_fp16` halves it but still exceeds the
+  default.
 - **Cancellation works.** Cancelling the gRPC call drops the request from the
   queue without running the encoder, which is the point of the front-end model.
   This is what the removed `sam2_encoder_jpeg` ensemble could never do — Triton
