@@ -1,12 +1,40 @@
 name: "sam1_encoder"
-backend: "onnxruntime"
-max_batch_size: 0
+backend: "python"
+
+# Public SAM1 (ViT-H) encoder endpoint. A client sends EITHER the raw `image`
+# tensor or a `jpeg_image`; this model forwards to the real ONNX encoder,
+# `sam1_encoder_onnx`, via BLS. See 1/model.py for why the public name is a
+# Python model rather than the ONNX model itself.
+#
+# max_batch_size 1 + dynamic_batching: the batching scheduler is the only one
+# that DROPS cancelled requests while they are still queued (the default
+# scheduler dequeues and executes them, merely discarding the response), and it
+# is what enables request priority. The ONNX export cannot batch -- batch=1 is
+# hard-wired -- which is exactly why the batching lives here instead.
+#
+# Wire shapes: dims below EXCLUDE the leading batch dimension, so `image` is
+# [1,3,1024,1024] on the wire (unchanged from the previous ONNX-backed config)
+# and `jpeg_image` is [1,1].
+max_batch_size: 1
 
 input [
   {
     name: "image"
     data_type: TYPE_FP32
-    dims: [ -1, 3, 1024, 1024 ]
+    dims: [ 3, 1024, 1024 ]
+    # Optional: supply this OR jpeg_image, never both, never neither.
+    # Passed through to the encoder untouched -- the caller has already applied
+    # SAM's normalization.
+    optional: true
+  },
+  {
+    name: "jpeg_image"
+    data_type: TYPE_STRING   # Triton's config type for BYTES tensors
+    dims: [ 1 ]
+    # One JPEG, already scaled to 1024x1024. The server decodes it and applies
+    # ((x/255) - mean) / std from the parameters below, because the SAM1 graph
+    # does not normalize internally.
+    optional: true
   }
 ]
 
@@ -14,25 +42,50 @@ output [
   {
     name: "image_embeddings"
     data_type: TYPE_FP32
-    dims: [ -1, 256, 64, 64 ]
+    dims: [ 256, 64, 64 ]
   }
 ]
+
+dynamic_batching {
+  priority_levels: 2
+  default_priority_level: 2
+}
 
 instance_group [
   {
-    count: 1
-    kind: KIND_GPU
+    # Must be >= the inner ONNX model's instance count, because each BLS
+    # .exec() blocks its instance: with fewer front ends than back ends the
+    # wrapper serializes requests the encoder could have run in parallel.
+    # Prod runs sam1_encoder_onnx on two cards (gpus: [0,2]); dev runs one.
+    count: 2
+    kind: KIND_CPU
   }
 ]
 
-# Performance optimization
-# TensorRT disabled due to ONNX operator compatibility issues
-# Model will still run on GPU via ONNX Runtime
-optimization {
-  cuda {
-    graphs: true
-  }
+parameters: {
+  key: "inner_model"
+  value: { string_value: "sam1_encoder_onnx" }
 }
-
-# Model metadata
-version_policy: { all { }}
+parameters: {
+  key: "tensor_input"
+  value: { string_value: "image" }
+}
+parameters: {
+  key: "output_names"
+  value: { string_value: "image_embeddings" }
+}
+parameters: {
+  key: "expected_size"
+  value: { string_value: "1024" }
+}
+# torchvision ImageNet constants. Identical to SAM's canonical pixel_mean /
+# pixel_std ([123.675, 116.28, 103.53] / [58.395, 57.12, 57.375]) divided by
+# 255 -- verified equal to 3e-8 in float32.
+parameters: {
+  key: "norm_mean"
+  value: { string_value: "0.485,0.456,0.406" }
+}
+parameters: {
+  key: "norm_std"
+  value: { string_value: "0.229,0.224,0.225" }
+}

@@ -1,0 +1,50 @@
+name: "sam1_encoder_onnx"
+backend: "onnxruntime"
+max_batch_size: 0
+
+# The real SAM1 ViT-H encoder. NOT called directly by clients: the Python model
+# `sam1_encoder` owns the public name and forwards here via BLS, adding the
+# optional-JPEG input plus queued-request cancellation and priority that this
+# ONNX model cannot have itself.
+#
+# Renamed from `sam1_encoder` when the front end took over that name. The
+# 1/ weights are deployment-managed and not committed -- note there are TWO
+# files, model.onnx (2.9 MB graph) and model.onnx.data (2.55 GB external
+# weights); staging only the former yields a model that fails to load.
+# Deployed configs additionally pin instance_group.gpus to environment-specific
+# ordinals: prod cards [0, 2] (two instances), dev card 1 (one instance, since
+# this model needs ~16.7 GB and dev's card 0 holds the SAM2/SAM3 models).
+input [
+  {
+    name: "image"
+    data_type: TYPE_FP32
+    dims: [ 1, 3, 1024, 1024 ]
+  }
+]
+
+output [
+  {
+    name: "image_embeddings"
+    data_type: TYPE_FP32
+    dims: [ 1, 256, 64, 64 ]
+  }
+]
+
+instance_group [
+  {
+    count: 1
+    kind: KIND_GPU
+  }
+]
+
+# Performance optimization
+# TensorRT disabled due to ONNX operator compatibility issues
+# Model will still run on GPU via ONNX Runtime
+optimization {
+  cuda {
+    graphs: true
+  }
+}
+
+# Model metadata
+version_policy: { all { }}

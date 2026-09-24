@@ -70,10 +70,22 @@ model_repository/
 ├── sam3_decoder/
 │   ├── 1/prompt_encoder_mask_decoder.onnx
 │   └── config.pbtxt
-└── sam_encoder_jpeg/          # Python/BLS: (JPEG, model_type) -> routes to the
-    ├── 1/model.py             #   matching encoder, returns its embeddings
-    └── config.pbtxt
+│
+│   # Deployed encoder endpoints. Each public name is a Python/BLS front end
+│   # taking EITHER a raw tensor or a JPEG; `<name>_onnx` is the real model.
+│   # The three front ends share one byte-identical 1/model.py.
+├── sam1_encoder/               ├── sam1_encoder_onnx/
+│   ├── 1/model.py              │   ├── 1/model.onnx + model.onnx.data
+│   └── config.pbtxt            │   └── config.pbtxt
+├── sam2.1_large_encoder/       ├── sam2.1_large_encoder_onnx/
+└── sam3_tracker_encoder_fp16/  └── sam3_tracker_encoder_fp16_onnx/
 ```
+
+Note the two naming families above: `sam1_encoder` / `sam2_encoder` /
+`sam3_encoder` (+ decoders) are **this repo's own exports**, produced by the
+`setup-*` tasks. `sam2.1_large_encoder` and `sam3_tracker_encoder_fp16` are the
+**deployed** models the real clients use, and they are different exports — see
+the naming note further down.
 
 #### Two-Stage Inference Pipeline
 
@@ -158,46 +170,98 @@ instance_group [
 > `gpus` pins in sync. (The deployment used to hardcode `CUDA_VISIBLE_DEVICES`
 > for the same reason; that was removed once device-plugin fencing was verified.)
 
-#### JPEG-Decode Entry Point (`sam_encoder_jpeg`)
+#### Encoder Endpoints: raw tensor or JPEG, one name each
 
-To avoid sending a large FP32 tensor over the wire (~12.6 MB for a 1024×1024
-image), a client may instead send a single JPEG (already resized/padded to the
-model's input size) and let the server decode it. A single Python-backend model,
-`sam_encoder_jpeg`, handles all three model families:
+Every public encoder name is a **Python-backend front end** that accepts
+*either* the raw FP32 tensor *or* a single JPEG, and forwards to the real ONNX
+model living under `<name>_onnx` via **BLS**
+(`pb_utils.InferenceRequest`). Sending a JPEG avoids ~12.6 MB of FP32 tensor on
+the wire per 1024×1024 image.
 
-- **Inputs:** `encoded_image` (`BYTES`, one JPEG) and `model_type` (`BYTES`,
-  `"sam1"` | `"sam2"` | `"sam3"`).
-- **What it does:** decodes the JPEG with Pillow, scales to `[0,1]` planar RGB
-  (matching the client's existing `/255` preprocessing — the encoders bake in any
-  further normalization), then dispatches to the matching deployed encoder via
-  **BLS** (`pb_utils.InferenceRequest`) and returns that encoder's outputs. It
-  does **not** resize — the client must send a correctly-sized JPEG, and the
-  model raises if the decoded size is wrong for the chosen `model_type`.
-- **Routing** lives in one `ROUTES` table in `1/model.py`; adding a model family
-  is one entry. Current routes:
+| public endpoint | raw input | JPEG input | inner ONNX model | outputs |
+|---|---|---|---|---|
+| `sam1_encoder` | `image` [1,3,1024,1024] | `jpeg_image` | `sam1_encoder_onnx` | `image_embeddings` |
+| `sam2.1_large_encoder` | `image` [1,3,1024,1024] | `jpeg_image` | `sam2.1_large_encoder_onnx` | 3 tensors |
+| `sam3_tracker_encoder_fp16` | `pixel_values` [1,3,1008,1008] | `jpeg_image` | `sam3_tracker_encoder_fp16_onnx` | 3 tensors |
 
-  | `model_type` | JPEG size | encoder (deployed) | encoder input | outputs |
-  |--------------|-----------|--------------------|---------------|---------|
-  | `sam1` | 1024×1024 | `sam1_encoder`         | `image`        | `image_embeddings` |
-  | `sam2` | 1024×1024 | `sam2.1_large_encoder` | `image`        | `high_res_feats_0`, `high_res_feats_1`, `image_embed` |
-  | `sam3` | 1008×1008 | `sam3_encoder`         | `pixel_values` | `image_embeddings.0/.1/.2` |
+Both inputs are `optional: true`; a request must supply **exactly one**. The
+front ends share one `1/model.py` — byte-identical in all three directories, with
+everything model-specific coming from `config.pbtxt` `parameters`. Edit one and
+copy it to the other two.
 
-Because the three encoders return different tensors, `config.pbtxt` declares the
-**union** of all outputs and each call populates only the chosen model's subset.
-The caller must therefore request the specific output names for the `model_type`
-it selected (a request that leaves outputs unspecified defaults to "all" and will
-fail, since only one model's tensors are produced per call).
+**Half-precision responses.** Outputs default to FP32; the request *parameter*
+`request_fp16: true` casts them to FLOAT16, halving the response (SAM2:
+16.8 MB → 8.4 MB). It is a parameter rather than a separate endpoint so that
+clients predating it are untouched — they don't send it and keep getting FP32
+byte-for-byte. Note Triton does **not** enforce a python model's declared output
+dtype (verified on 25.01), which is what lets one output name carry either
+precision; the FP32 in `config.pbtxt` is a default, not a guarantee.
 
-Pillow is not in the stock Triton image, so the server is built from the repo
-`Dockerfile` (Triton + Pillow); `docker compose` builds it automatically.
+**Why a Python model owns each name.** The ONNX backend cannot have an optional
+input and cannot decode a JPEG, so the either/or contract has to live in front
+of it. Separately, the encoder exports hard-wire batch=1 and so cannot run under
+the dynamic-batch scheduler — which is the only scheduler that *drops* CANCELLED
+requests before executing them (the default scheduler dequeues and executes
+them, merely discarding the response). A Python model has no baked batch
+dimension, so it batches trivially at size 1 and cancellation plus request
+priority work again.
 
-> **SAM2 encoder naming.** The `sam2` route targets the *deployed* encoder
+Because `max_batch_size: 1`, the `dims` in these configs **exclude** the leading
+batch dimension: `image` is `[1,3,1024,1024]` on the wire (unchanged from the
+older ONNX-backed configs) and `jpeg_image` is `[1,1]`.
+
+> **Normalization — the JPEG path only.** **None of the encoders normalize
+> internally**; every one goes straight from its input into the patch-embed
+> `Conv` (verified by walking all three ONNX graphs, 2026-09-16). The raw
+> `image` / `pixel_values` input is therefore passed through untouched — it is
+> "the exact tensor for the target model" and the caller owns the affine step. A
+> JPEG carries only uint8, so on that path the **server** applies
+> `((x/255) - mean) / std`, per channel in RGB order:
+>
+> | | mean | std | source |
+> |---|---|---|---|
+> | SAM1, SAM2 | `0.485, 0.456, 0.406` | `0.229, 0.224, 0.225` | torchvision ImageNet; identical to SAM's canonical `pixel_mean`/`pixel_std` ÷ 255 |
+> | SAM3 | `0.5, 0.5, 0.5` | `0.5, 0.5, 0.5` | `preprocessor_config.json` of `onnx-community/sam3-tracker-ONNX` — maps to [-1, 1], *not* ImageNet |
+>
+> An earlier version of this document claimed the encoders "bake in any further
+> normalization" and the JPEG path did `/255` only. **That was wrong** and
+> produced under-normalized encoder input.
+
+The front ends do **not** resize: the client must send a correctly-sized square
+JPEG, and the model returns an error if the decoded size is wrong. Pillow is not
+in the stock Triton image, so the server is built from the repo `Dockerfile`
+(Triton + Pillow); `docker compose` builds it automatically.
+
+> **SAM2 / SAM3 encoder naming.** The deployed SAM2 encoder is
 > `sam2.1_large_encoder` (three outputs: `high_res_feats_0` `[1,32,256,256]`,
 > `high_res_feats_1` `[1,64,128,128]`, `image_embed` `[1,256,64,64]`), which is
-> what the mobile client's on-device decoder consumes — not this repo's
-> `scripts/export_sam2_to_onnx.py`, which produces a *different*, single-output
-> (`image_embeddings`) encoder. Reconciling that export with the deployed model
-> is separate follow-up work.
+> what the mobile client's on-device decoder consumes — *not* this repo's
+> `scripts/export_sam2_to_onnx.py`, which produces a different, single-output
+> (`image_embeddings`) encoder. Likewise the deployed SAM3 encoder is
+> `sam3_tracker_encoder_fp16`, not this repo's `sam3_encoder`. Reconciling those
+> exports with the deployed models is separate follow-up work.
+>
+> **`sam2.1_large_encoder` defaults to FP32 and must keep doing so** — released
+> Paintera builds depend on it. FP16 is opt-in per request via `request_fp16`
+> (above), not a second endpoint or a second copy of the weights.
+> `sam3_tracker_encoder_fp16`, by contrast, has genuine FLOAT16 *weights* and
+> FP32 outputs — its name describes the export, not the response.
+
+**Removed 2026-09-17:** `sam2.1_large_encoder_fp16` and its
+`sam2.1_large_encoder_fp16_onnx` weights (~890 MB), replaced by the
+`request_fp16` parameter on `sam2.1_large_encoder`. That export was the fp32
+network plus three output `Cast`→FLOAT16 nodes, so casting in the front end
+reproduces it **bit-for-bit** — verified against embeddings captured from it
+before deletion. Keeping the fp32 weights rather than the fp16 ones is
+deliberate: it is the lossless direction, and prod already has that file.
+
+**Removed 2026-09-16** (superseded by the above, and all were test-only):
+`sam2_encoder_jpeg` (ensemble; Triton does not propagate cancellation to
+already-dispatched ensemble children, so it could never be made cancel-aware),
+`sam2_preprocess` (its decode step), `sam2_encoder_jpeg_fp32`,
+`sam_encoder_jpeg` (the `model_type`-routed union-output entry point) and
+`sam2.1_large_encoder_fp32` (now an exact duplicate of
+`sam2.1_large_encoder`).
 
 ### Client Integration
 

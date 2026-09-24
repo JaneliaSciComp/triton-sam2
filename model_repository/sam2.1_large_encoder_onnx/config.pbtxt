@@ -1,0 +1,56 @@
+name: "sam2.1_large_encoder_onnx"
+backend: "onnxruntime"
+
+# The real SAM2.1 large encoder (the 3-output export the mobile client's
+# decoder consumes). It is NOT called directly by clients: the python wrapper
+# model "sam2.1_large_encoder" owns the public name and forwards here via BLS,
+# adding queued-request cancellation and priority support that this ONNX model
+# cannot have itself (its export hard-wires batch=1, so it cannot run under the
+# dynamic-batch scheduler). The 1/model.onnx weights are deployment-managed and
+# not committed. Deployed configs additionally pin instance_group.gpus to
+# environment-specific ordinals.
+max_batch_size: 0
+
+input [
+  {
+    name: "image"
+    data_type: TYPE_FP32
+    dims: [ 1, 3, 1024, 1024 ]
+  }
+]
+
+output [
+  {
+    name: "high_res_feats_0"
+    data_type: TYPE_FP32
+    dims: [ 1, 32, 256, 256 ]
+  },
+  {
+    name: "high_res_feats_1"
+    data_type: TYPE_FP32
+    dims: [ 1, 64, 128, 128 ]
+  },
+  {
+    name: "image_embed"
+    data_type: TYPE_FP32
+    dims: [ 1, 256, 64, 64 ]
+  }
+]
+
+instance_group [
+  {
+    # Two instances on one card: they share its compute, but overlap one
+    # request's host<->device copies with the other's inference. ~5.7 GB each.
+    # Prod pins both to card 1 (gpus: [1]); unpinned, count applies per GPU.
+    count: 2
+    kind: KIND_GPU
+  }
+]
+
+optimization {
+  cuda {
+    graphs: true
+  }
+}
+
+version_policy: { all { }}
