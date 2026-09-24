@@ -88,8 +88,9 @@ dynamic_batching {
 instance_group [
   {
     # Must be >= the inner ONNX model's instance count: each BLS .exec() blocks
-    # its instance. sam2.1_large_encoder_onnx runs a single instance.
-    count: 1
+    # its instance. Prod runs two sam2.1_large_encoder_onnx instances, both on
+    # card 1 (a third does not fit beside sam1 on cards 0/2); dev runs one.
+    count: 2
     kind: KIND_CPU
   }
 ]

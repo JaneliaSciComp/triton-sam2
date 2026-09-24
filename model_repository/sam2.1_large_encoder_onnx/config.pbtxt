@@ -39,7 +39,10 @@ output [
 
 instance_group [
   {
-    count: 1
+    # Two instances on one card: they share its compute, but overlap one
+    # request's host<->device copies with the other's inference. ~5.7 GB each.
+    # Prod pins both to card 1 (gpus: [1]); unpinned, count applies per GPU.
+    count: 2
     kind: KIND_GPU
   }
 ]
