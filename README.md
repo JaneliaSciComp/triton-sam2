@@ -30,13 +30,13 @@ Production-grade deployment of Meta's Segment Anything Models (SAM1, SAM2, SAM3)
 > **Using Podman?** The `docker` and `docker compose` commands below have direct
 > `podman` / `podman compose` equivalents. Ensure the NVIDIA Container Toolkit is
 > configured for Podman (CDI) and pass GPUs with `--device nvidia.com/gpu=all`.
-> For example: `podman run --rm --device nvidia.com/gpu=all nvcr.io/nvidia/tritonserver:25.01-py3 nvidia-smi`.
+> For example: `podman run --rm --device nvidia.com/gpu=all nvcr.io/nvidia/tritonserver:26.10-py3 nvidia-smi`.
 
 ### Verify GPU Access
 
 ```bash
 # Test Docker can access GPUs
-docker run --rm --gpus all nvcr.io/nvidia/tritonserver:25.01-py3 nvidia-smi
+docker run --rm --gpus all nvcr.io/nvidia/tritonserver:26.10-py3 nvidia-smi
 ```
 
 ### Setup Options

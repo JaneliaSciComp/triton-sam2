@@ -442,7 +442,7 @@ pixi run lint                # ruff
 #### Kubernetes / OpenShift Deployment
 
 The single-node `docker-compose.yml` is intended for personal servers and local
-development. The same `nvcr.io/nvidia/tritonserver:25.01-py3` image runs equally
+development. The same `nvcr.io/nvidia/tritonserver:26.10-py3` image runs equally
 well under Kubernetes/OpenShift; a production cluster deployment typically adds:
 
 - Multiple NVIDIA GPUs, with a `Recreate` rollout strategy to avoid GPU contention
