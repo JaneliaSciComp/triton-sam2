@@ -183,3 +183,9 @@ back — only the dtype changes.
   does not propagate cancellation to already-dispatched ensemble children.
 - **Request priority** is available via the batching scheduler's two levels
   (1 jumps the queue, 2 is the default).
+- **Using HTTP instead of gRPC?** The same endpoints work over HTTP/REST, but
+  the deployed servers only accept requests whose `Content-Type` is absent,
+  `application/json` or `application/octet-stream`; anything else gets a 415.
+  The Triton client libraries already comply. With `curl -d`, add
+  `-H 'Content-Type: application/json'` (curl otherwise labels the body as a
+  web form).
